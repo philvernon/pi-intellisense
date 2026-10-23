@@ -1,0 +1,19 @@
+{
+  "name": "pi-intellisense",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi transcript IntelliSense and Neovim LSP navigation",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "node --check src/index.ts && node --check src/ui/code-pane.ts && node --check src/lsp-stdio.mjs && node --check src/neovim-rpc.mjs && node -e \"import('./src/index.ts').then(() => console.log('entry module loads'))\""
+  }
+}
