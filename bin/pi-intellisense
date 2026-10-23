@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+focus="${PI_TAB_FOCUS_SOURCE:-$HOME/dev-trash/pi-tab-focus/src/index.ts}"
+if [[ ! -f "$focus" ]]; then
+  printf 'Cannot find patched pi-tab-focus at %s\nSet PI_TAB_FOCUS_SOURCE to its src/index.ts.\n' "$focus" >&2
+  exit 1
+fi
+exec pi --tui-mode fullscreen -e "$focus" -e "$here/src/index.ts" "$@"

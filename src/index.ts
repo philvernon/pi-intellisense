@@ -14,6 +14,8 @@ import {stripAnsi} from "./positions.mjs";
 import {openInNeovim} from "./neovim.mjs";
 import {connectNeovim} from "./neovim-rpc.mjs";
 import {openCodePane} from "./ui/code-pane.ts";
+import {createNativeTranscriptController} from "./native/native-controller.ts";
+import {resolveLiveTranscriptSymbol} from "./native/live-source.ts";
 
 const SHA=(s:string)=>createHash("sha256").update(s).digest("hex");
 const MAX_FILE=250_000;
@@ -139,6 +141,8 @@ export default function piIntelliSense(pi:ExtensionAPI){
   let active:AnyCtx|undefined;
   let config:any=DEFAULT_CONFIG,manager:ReturnType<typeof createLspManager>|undefined;
   let unregister:undefined|(()=>void);
+  let nativeController: ReturnType<typeof createNativeTranscriptController>|undefined;
+  let latestNativeRevision = "";
   const diagnostics:Record<string,any[]>={};
 
   async function ensureRuntime(ctx:AnyCtx) {
@@ -160,41 +164,36 @@ export default function piIntelliSense(pi:ExtensionAPI){
     finally{rpc.close();}
   }
   async function bridgeAction(operation:string,snapshot:any) {
-    const ctx=active;
-    if(!ctx||ctx.mode!=="tui")return;
-    const span=resolveSourceAtCursor({spans:snapshot.codeRegions??[],cursor:snapshot.visualCursor,
-      expectedRevision:String(snapshot.sourceRevision),currentRevision:String(snapshot.sourceRevision)});
-    if(!span||span.confidence!=="verified"){ctx.ui.notify("No verified source at transcript cursor. Use /intel <file>.", "warning");return;}
-    try{
-      const file=fileURLToPath(span.sourceUri),root=rootFor(ctx);
-      if(!within(root,file))throw new Error("Source outside project");
-      const code=await fs.readFile(file,"utf8");
-      if(span.sourceVersion&&SHA(code)!==span.sourceVersion)throw new Error("Transcript source stale");
-      const client=await (await ensureRuntime(ctx)).get(file,code);
-      const result=await client.query({kind:operation,uri:span.sourceUri,position:span.sourceStart});
-      if(operation==="hover"||operation==="signatureHelp"||operation==="completion"){
-        const detail=operation==="hover"?
-          (Array.isArray(result?.contents)?result.contents:[result?.contents]).filter(Boolean)
-            .map((x:any)=>typeof x==="string"?x:x.value??"").join("\n\n") :
-          JSON.stringify(result,null,2);
-        await showText(ctx,operation+" · "+file,detail||"No LSP information");
-      }else{
-        const list=normalizeLocations(result);
-        if(!list.length){ctx.ui.notify("No "+operation+" location","info");return;}
-        let target=list[0];
-        if(list.length>1){
-          const labels=list.map(x=>x.uri+":"+(x.selectionRange.start.line+1));
-          const chosen=await ctx.ui.select("Select "+operation+" destination",labels);
-          if(chosen===undefined)return;
-          target=list[labels.indexOf(chosen)]??target;
-        }
-        await destination(ctx,target);
-      }
-    }catch(error){ctx.ui.notify("IntelliSense: "+String((error as Error).message??error),"error");}
+    if(!active || !nativeController || active.mode!=="tui") return;
+    latestNativeRevision = String(snapshot.transcriptRevision??"");
+    await nativeController.invoke(operation,snapshot);
   }
   pi.on("session_start",(_event,ctx)=>{
     active=ctx as AnyCtx;
     const sid=sessionId(active);
+    nativeController?.dispose();
+    nativeController=createNativeTranscriptController({
+      ui:ctx.ui,
+      getSession:()=>({sessionId:sid,transcriptRevision:latestNativeRevision}),
+      resolveSymbol:(snapshot:any)=>resolveLiveTranscriptSymbol(snapshot,{root:rootFor(ctx)}),
+      lsp:{query:async(request:any)=>{
+        const file=fileURLToPath(request.uri);
+        if(!within(rootFor(ctx),file))throw new Error("Source outside workspace");
+        const text=await fs.readFile(file,"utf8");
+        const client=await (await ensureRuntime(ctx)).get(file,text);
+        return client.query(request);
+      }},
+      neovim:{open:async(location:any)=>{
+        await ensureRuntime(ctx);
+        return destination(ctx,{uri:location.uri,
+          selectionRange:{start:{line:location.line,character:location.character}}});
+      }},
+      validateTarget:async(location:any)=>{
+        const confirmed=await validateFileLocation({uri:location.uri,
+          selectionRange:{start:{line:location.line,character:location.character}}}, {root:rootFor(ctx)});
+        return {uri:location.uri,line:confirmed.line,character:confirmed.character};
+      }
+    });
     const bus={
       on:(name:string,handler:(value:any)=>void)=>{
         const result=(pi.events as any).on(name,handler);
@@ -206,7 +205,8 @@ export default function piIntelliSense(pi:ExtensionAPI){
     unregister=()=>registration.dispose();
   });
   pi.on("session_shutdown",async()=>{
-    unregister?.();unregister=undefined;active=undefined;
+    unregister?.();unregister=undefined;
+    nativeController?.dispose();nativeController=undefined;latestNativeRevision="";active=undefined;
     await manager?.close();manager=undefined;
     for(const key of Object.keys(diagnostics))delete diagnostics[key];
   });

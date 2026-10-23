@@ -1,66 +1,80 @@
 # pi-intellisense
 
-Interactive, read-only LSP code navigation **inside Pi**, with Neovim as the destination editor. The extension uses local language servers, not model-generated hover text.
+**Native LSP hover and definition inside the original Pi transcript.** Uses the existing `pi-tab-focus` visual cursor, a positioned Pi overlay and an existing Neovim instance. No separate code viewer is involved in the `K`/`gd` path.
 
-## Run
+## Start
+
+Run Pi in the project whose code you want to navigate:
 
 ```sh
-pi -e ~/dev/repos/pi-intellisense/src/index.ts --tui-mode fullscreen
+cd ~/dev/repos/your-project
+
+# Use a real Neovim server. Start this in another terminal:
+nvim --listen /tmp/pi-intel.nvim
+
+# In the shell that launches Pi:
+export PI_INTELLISENSE_NVIM=/tmp/pi-intel.nvim
+~/dev/repos/pi-intellisense/bin/pi-intellisense
 ```
 
-Open a real source file using `/intel src/example.ts`. Alternatively use `/intel` to select a fenced code block or a `read` tool result in the active Pi conversation. `read` results with a recorded file path are verified against disk automatically; other snippets prompt for a corresponding source path. The extension verifies an exact contiguous match before enabling LSP queries for the selected snippet. Blocks without verifiable file provenance remain viewable but cannot query source LSP or jump to a guessed file.
+The wrapper loads both **patched local** `~/dev-trash/pi-tab-focus/src/index.ts` and `~/dev/repos/pi-intellisense/src/index.ts` using `pi -e`, with `--tui-mode fullscreen`. To launch manually:
 
-### Keys in the IntelliSense code pane
+```sh
+pi --tui-mode fullscreen \
+  -e ~/dev-trash/pi-tab-focus/src/index.ts \
+  -e ~/dev/repos/pi-intellisense/src/index.ts
+```
 
-| Key | Behaviour |
-|---|---|
-| `h j k l`, arrows, `w b`, `gg G`, `0 $` | Navigate code |
-| `K` | Language-server hover |
-| `gd` | Go to definition, opening target in running Neovim |
-| `gD` | Declaration |
-| `gi` | Implementation |
-| `gy` | Type definition |
-| `gr` | References picker |
-| `gs` | Document symbols picker |
-| `[d`, `]d` | Previous/next published diagnostic |
-| `Ctrl-K` | Signature help (terminal permitting) |
-| `Ctrl-Space` | Read-only completion list (terminal permitting) |
-| `Esc` | Dismiss information/picker, then close pane |
+**Do not rely on the installed npm `pi-tab-focus` 1.0.2 for native hover:** it has not been patched. This change currently lives in the local `~/dev-trash/pi-tab-focus` checkout. Loading the npm copy *as well as* the patched checkout can cause competing transcript listeners. The local patch can be reapplied to a compatible copy with `node scripts/patch-tab-focus.mjs /path/to/pi-tab-focus` (the script is idempotent).
 
-Multiple locations are shown in a picker. Results cannot modify source code. Pi's prompt and transcript remain untouched.
+Your source project needs a configured language server. For TypeScript/JavaScript, install `typescript-language-server` and a supported `typescript` package (the tested setup used TypeScript 5.9). The server resolves TypeScript from the workspace. Other defaults in `src/runtime.mjs`: `basedpyright-langserver`, `rust-analyzer`, `gopls` and `lua-language-server`.
 
-### Prerequisites
-
-- Pi with interactive TUI and Node >=22.18 (Pi loads `.ts` directly).
-- A language server available in PATH. Defaults: `typescript-language-server --stdio` for TS/JS, `basedpyright-langserver --stdio` for Python, `rust-analyzer`, `gopls` and `lua-language-server` for corresponding languages. Nothing is auto-installed.
-- Existing Neovim server socket. Either launch `nvim --listen /tmp/pi-intel.nvim` and `export PI_INTELLISENSE_NVIM=/tmp/pi-intel.nvim` before Pi, or run Pi in a Neovim terminal where `NVIM` names the socket.
-
-Optional configuration: `~/.pi/agent/pi-intellisense.json`
+Optional `~/.pi/agent/pi-intellisense.json`:
 
 ```json
 {
   "nvimSocket": "env:NVIM",
   "timeoutMs": 5000,
   "servers": {
-    "typescript": {"command": "typescript-language-server", "args": ["--stdio"]},
-    "python": {"command": "basedpyright-langserver", "args": ["--stdio"]}
+    "typescript": { "command": "typescript-language-server", "args": ["--stdio"] }
   }
 }
 ```
 
-An explicit absolute pathname can replace `env:NVIM`. `PI_INTELLISENSE_NVIM` takes precedence over `NVIM` when using the environment setting. Neovim receives structured MessagePack-RPC calls, with paths passed as arguments, never shell interpolation. Location validation restricts jumps to the project root.
+`PI_INTELLISENSE_NVIM` overrides `NVIM` when `nvimSocket` uses the environment setting. Neovim file navigation requires an existing socket; it does not start another editor.
 
-## pi-tab-focus integration status
+## Inside the Pi transcript
 
-**The standalone code pane works; direct `K`/`gd` on the existing `pi-tab-focus` transcript cursor still needs an upstream bridge.** This extension registers the proposed `pi-intellisense:register:v1` event and implements its consumer. The published `pi-tab-focus` does not yet emit the required source-position snapshot, so loading both extensions will **not** enable `K` or `gd` directly in the original transcript. Its existing focus, yank and navigation remain unchanged. Use `/intel` in the meantime. See [SPEC.md](SPEC.md) sections 2–4 for the bridge contract and required upstream changes.
+1. Ask Pi to show or inspect source code **including its project-relative path**. The code needs to be recognisably file-backed and match current disk contents. The extension does not guess file identity from generated prose.
+2. Press `Tab` to enter `pi-tab-focus` transcript navigation.
+3. Press `v` to enter its visual cursor mode. Move with `j/k/h/l` and `w/b` to a code symbol.
+4. Press `K` to show a floating LSP hover popup on top of the transcript. Press `Esc` to dismiss it without leaving transcript navigation.
+5. Press `gd` to ask LSP for the definition, then open the result directly in the existing Neovim server.
 
-## Development
+Existing transcript item-mode `K`, yanks, selections, `gg`/`ge` and other Vim motions remain owned by `pi-tab-focus`. Supported secondary semantics include `gr`, `gD`, `gi`, `gy` and `gs`; not all secondary operations have been exercised against live servers.
+
+The old `/intel` code viewer remains as a separate optional diagnostic fallback, **not** the intended interface.
+
+## Sidekick / pi-tools
+
+Your local Neovim configuration uses `folke/sidekick.nvim` and `~/dev-trash/pi-tools` with `tmux -L agents`. Neovim's LSP cannot operate directly on that terminal buffer, so code analysis still happens through the Pi extensions. Configure Sidekick's Pi command to launch the wrapper or both `-e` arguments. Explicitly set a Neovim socket in sessions where `NVIM` is not inherited.
+
+No changes have been made to your `pi-tools` repository or Neovim configuration.
+
+## Verification
 
 ```sh
-npm test
+cd ~/dev/repos/pi-intellisense
+npm run test:all
 npm run build
+
+cd ~/dev-trash/pi-tab-focus
+npm test
+npm run typecheck
 ```
 
-The tests cover fenced blocks, source verification, UTF-16/UTF-8 conversion, keyboard grammar, LSP lifecycle, real JSON-RPC framing, Neovim MessagePack framing and fake Pi command/UI integration. `npm run build` syntax-checks and loads the extension entrypoint. Tests do **not** prove a live Pi/Neovim/LSP end-to-end session; manual smoke testing is still required.
+The current tests pass (66 existing pi-intellisense, 24 native contracts, 67 patched pi-tab-focus). A real Pi 1.3.0 fullscreen PTY smoke test with a TypeScript code snippet showed the on-transcript `K` hover and `gd` successfully opened the correct file and cursor in an existing headless Neovim server. That smoke test **did not** exercise your complete Sidekick/tmux setup, every language or text wrapping/streaming edge case.
 
-[Specification](SPEC.md) · [Contract interfaces](TEST_CONTRACT.md) · [Verification](VERIFICATION.md) · [Optional alternative viewer design](docs/SPEC.md)
+The optional test-only `/smoke-intel` command is in `test/fixtures/native-smoke.ts`. Load it as a third `-e` extension to inject a known file-backed code snippet without invoking a model.
+
+[Specification](SPEC.md) · [Test contract](TEST_CONTRACT.md) · [Native test plan](docs/TEST_PLAN.md) · [Verification](VERIFICATION.md) · [Tab-focus patch](docs/UPSTREAM_BRIDGE.md)

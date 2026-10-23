@@ -1,60 +1,59 @@
-> NOTE: Alternative standalone code-pane test plan, not the authoritative test inventory. See ../SPEC.md, ../TEST_CONTRACT.md and ../test/ for current pi-tab-focus-native RED tests. Some proposed files below do not exist.
+# Native transcript IntelliSense — acceptance test plan
 
-# Supplemental test plan and traceability
+**Canonical test plan (2026-10-23).** Replaces the exploratory standalone-viewer plan. The user's requirement is **inline hover/navigation in the original Pi transcript**, using `pi-tab-focus` visual navigation. Core implementation is present in the current local checkout and verified against Pi 1.3.0, TypeScript LSP and headless Neovim.
 
-**Primary specification and contracts are [../SPEC.md](../SPEC.md) and [../TEST_CONTRACT.md](../TEST_CONTRACT.md).** The tests described here exercise additional reusable extraction, path, LSP, RPC and lifecycle seams. Where a requirement differs, the primary in-transcript `pi-tab-focus` bridge contract takes precedence. No separate code viewer is required for v1.
+## Suites and status
 
-Status: **red tests written before implementation**. Runner: Node `node:test`, `node:assert/strict`; no dependencies or live services needed for unit tests. Tests import intentionally unimplemented `src/*.mjs` entry points. Failure is expected until production code is added.
+| Suite | Command | Current result |
+|---|---|---|
+| Existing regression | `npm test` | 64 existing backend and separate `/intel` code-pane tests; GREEN |
+| Native contract | `npm run test:native` | New NT-01..NT-10 tests importing **not-yet-implemented** native API modules; GREEN |
+| Combined gate | `npm run test:all` | GREEN for the currently implemented contracts |
+| Static/module build | `npm run build` | Syntax / import check; does not prove real Pi integration |
 
-## Priorities and coverage
+Native contracts are implemented and passing. Do not claim Sidekick/tmux coverage from isolated unit tests or confuse the transitional `/intel` viewer with the native feature.
 
-| ID | Priority | Contract | Automated file |
-| --- | --- | --- | --- |
-| BL-01 | P0 | fenced block extraction, language, ordering, exact text | `test/blocks.test.mjs` |
-| BL-02 | P0 | unclosed and nested fences, branch-only ordering | `test/blocks.test.mjs` |
-| PR-01 | P0 | source verification through exact contiguous text | `test/provenance.test.mjs` |
-| PR-02 | P0 | stale, ambiguous, fabricated, symlink-escaped and truncated sources fail closed | `test/provenance.test.mjs` |
-| PO-01 | P0 | LSP UTF-16 → Neovim UTF-8 byte conversion | `test/positions.test.mjs` |
-| PO-02 | P0 | tabs, wide characters and combining marks in hit testing | `test/positions.test.mjs` |
-| LO-01 | P0 | Location and LocationLink variants, dedup and null | `test/locations.test.mjs` |
-| LO-02 | P0 | file URL decoding, trusted roots and traversal | `test/locations.test.mjs` |
-| NV-01 | P0 | explicit socket, injection-safe RPC call, row and byte column | `test/neovim.test.mjs` |
-| NV-02 | P0 | missing socket or editor error does not open a new editor | `test/neovim.test.mjs` |
-| LS-01 | P0 | initialize, opened document, negotiated capabilities, correct requests | `test/lsp.test.mjs` |
-| LS-02 | P0 | null results, cancellation, timeout, shutdown | `test/lsp.test.mjs` |
-| CT-01 | P0 | hover and definition at selected origin location, never invoke LLM | `test/controller.test.mjs` |
-| CT-02 | P0 | superseded request, branch change, cancellation and disposal | `test/controller.test.mjs` |
-| PI-01 | P1 | extension commands only in TUI; branch-aware picker; Pi adapter type pin | manual plus integration |
-| PI-02 | P1 | keyboard nav, mouse fullscreen-only, overlays and resize | manual plus component harness |
-| IN-01 | P1 | real TypeScript server hover/definition | opt-in integration |
-| IN-02 | P1 | real Neovim `--listen` opens existing target, Unicode cursor exact | opt-in integration |
-| SEC-01 | P0 | no shell interpolation, no out-of-root file, no untrusted code execution | `test/neovim.test.mjs`, `test/locations.test.mjs` |
+## Traceability
 
-## Test double interfaces
+| ID | Priority | Automated suite | Required behaviour |
+|---|---|---|---|
+| NT-01 | P0 | `native/focus-bridge.contract.test.mjs`, `native/native-controller.contract.test.mjs` | Original transcript visual cursor `K` triggers exactly one hover LSP request for correct source URI/position |
+| NT-02 | P0 | `native/inline-hover.contract.test.mjs` | Actual overlay via `ctx.ui.custom(...,{overlay:true,overlayOptions:{row,col,...}})`, near selected symbol in original Pi transcript; never `openCodePane` |
+| NT-03 | P0 | `native/inline-hover.contract.test.mjs` | `Esc` closes popup only, restores visual cursor, selected item, viewport, yank state |
+| NT-04 | P0 | `native/native-controller.contract.test.mjs` | `gd` → `textDocument/definition` → location-normalization → existing Neovim; multiple destinations display Pi overlay picker |
+| NT-05 | P0 | `native/focus-bridge.contract.test.mjs` | Item `K`, visual `gg/ge/gE`, `g` pending, `f/F/t/T`, copy/yank and Pi modal input semantics preserved |
+| NT-06 | P0 | `native/source-map.contract.test.mjs`, `native/native-controller.contract.test.mjs` | Verified display symbol hit maps correct UTF-16; rejects unmapped, ambiguous, fabricated, stale, gutter, whitespace and wrong revision |
+| NT-07 | P0 | `native/inline-hover.contract.test.mjs`, `native/native-controller.contract.test.mjs` | Scroll/reflow/resize/streaming/session change cancels or invalidates old popup/result safely |
+| NT-08 | P1 | `native/source-map.contract.test.mjs` | Virtual document may provide hover for generated snippet, but no guessed source navigation |
+| NT-09 | P0 | `native/neovim-sidekick.contract.test.mjs` | Sidekick + `tmux -L agents`: explicit socket routing, existing Neovim RPC, no nested editor/focus hijack |
+| NT-10 | P0 | `native/focus-bridge.contract.test.mjs` | Correct bridge lifecycle, session isolation, load order, unregister/hot reload, modal key handoff |
 
-- `FileSystem`: `realpath(path):Promise<string>`, `readFile(path, 'utf8'):Promise<string>`. Use a deterministic map in tests; no actual filesystem mutation.
-- `LspTransport`: `request(method, params, options?):Promise<unknown>`, `notify(method, params):Promise<void>|void`; fake records calls and simulates delays.
-- `NeovimRpc`: `request(method, params):Promise<unknown>`; fake records message shape. Do not spawn shell processes.
-- `Controller`: `createNavigationController({lsp, neovim, getGeneration, getSnapshot, report})`, `hover(selection)`, `definition(selection)`, `dispose()`. Selection has `uri`, `position`, `generation`, `snapshotId`, `root`.
-- Pure helpers receive plain records and optional injected filesystem. Returned objects are serializable; never hide failure by making up a location.
+### Fixtures and limits
 
-## Red/green process
+- `createTabFocusNativeBridge` is an **upstream implementation contract**; the production integration belongs inside `pi-tab-focus`'s existing input dispatcher. The test harness should be portable to the `pi-tab-focus` repository. No second `pi-intellisense` raw-input listener.
+- Geometry fixtures explicitly distinguish absolute transcript row/col and terminal-relative screen row/col.
+- Source fixtures include a wide `界` character before `café`, duplicate spans, old revisions and modified file hashes. Expand with ANSI, OSC8, CRLF, ZWJ, tabs, soft wrap, tool line gutters and code-fence indentation before declaring complete.
+- Fake UI records calls to `ui.custom`, forbids `setEditorComponent` and rejects `sendUserMessage`.
+- The fake LSP emits deterministic `Location`, `LocationLink`, hover Markdown and delayed responses. The fake Neovim records `open` calls.
+- Real terminal integration is **not simulated** by these pure contract tests; a PTY/fullscreen test harness and manual validation remain mandatory.
 
-1. Baseline: `npm test` must discover every test and report failures against explicit unimplemented functions. This baseline is the TDD starting point, **not** a pass.
-2. Implement pure contracts and run `npm run test:core`; ensure all P0 safety cases pass before wiring Pi/Neovim.
-3. Implement the LSP and Neovim adapters against fake transports, then run `npm test`. Each implemented contract must eventually turn green. Record compatible Pi, Neovim, Node and server versions.
-4. Add opt-in integration tests behind `PI_INTELLISENSE_INTEGRATION=1`, using temporary workspace and Neovim socket and real language server binaries. Never require the user's personal Neovim session during CI.
-5. Manually validate keyboard-only normal/fullscreen TUI, hover-on-mouse in fullscreen, screen resize, session switching and cancellation in actual Pi.
+## Manual end-to-end test — real Pi + Neovim
 
-## Mandatory scenarios not entirely covered by pure tests
+Environment: Pi 1.3.0 fullscreen, `pi-tab-focus` bridge-enabled version, `pi-vim`, real TS LSP, Neovim started with a known `--listen` socket and launched through the installed Sidekick configuration under `~/dev-trash/pi-tools` using `tmux -L agents`.
 
-- Actual Pi startup, extension hot reload, branch switch, `ctx.mode` different from `tui`.
-- Mouse reporting differences: Kitty, tmux, SSH and regular-mode terminal selection.
-- Real LSP server failures/restart, project-aware imports, virtual unsaved document support and diagnostics.
-- LSP position-encoding negotiation beyond UTF-16 and server-initiated client requests.
-- Neovim modified buffers, terminal focus, disconnected sockets and live line content differing from the disk snapshot.
-- End-to-end race: select A, hover A, select B, receive A's response, confirm no outdated UI or navigation.
+1. Ask Pi to display a TypeScript file-backed snippet with an obvious function call, in the ordinary chat transcript.
+2. `Tab` enters transcript item focus, `v` enters visual cursor, `w/l/h/j/k` select a code symbol. Confirm original Pi message remains visible (no /intel view).
+3. `K` displays the hover tooltip **beside the symbol** over the original chat text. Capture screenshot; verify type/docs originate from real LSP, no model request.
+4. `Esc` closes tooltip; verify identical item/cursor/viewport and immediate ability to yank or move.
+5. `gd` opens the precise target file/line/byte column in the existing Neovim. Test multiple targets and cancel.
+6. Repeat with code near right/bottom viewport, narrow screen, line wraps, tool expansion and a source changed on disk; verify no stale tooltip/jump.
+7. Verify `K` on transcript item focus still moves to previous message; `gg`/`ge` work; no input leakage to prompt, menus or pi-vim EX.
+8. Test with Pi launched via Sidekick/agents tmux both with and without inherited `NVIM` and verify explicit socket configuration.
 
-## Release gates
+**Verification completed:** native contracts green and actual Pi fullscreen `K` tooltip plus `gd` definition navigation to the existing Neovim socket were tested with a scripted PTY and a real TypeScript server. **Outstanding:** Sidekick/tmux focus/socket test, alternate language servers, advanced line wrapping and streaming. NT-08 remains a later virtual-document enhancement.
 
-All P0 unit tests green, two real end-to-end paths green (one anchored snippet and one generated/virtual snippet where supported), security checks green, Pi adapter verified against pinned installed version, no unbounded child processes or abandoned RPC connections. Product capabilities in the README must not claim success before these gates.
+## Repositories
+
+- `pi-intellisense`: source verifier, LSP, popup/overlay + Neovim routing, native contract tests.
+- `pi-tab-focus`: visual cursor/source-region export and single keyboard dispatcher, upstream tests.
+- `pi-tools`: existing Sidekick/Neovim host wiring; change only if smoke tests require it.

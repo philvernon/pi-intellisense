@@ -14,6 +14,11 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "build": "node --check src/index.ts && node --check src/ui/code-pane.ts && node --check src/lsp-stdio.mjs && node --check src/neovim-rpc.mjs && node -e \"import('./src/index.ts').then(() => console.log('entry module loads'))\""
+    "build": "node --check src/index.ts && node --check src/ui/code-pane.ts && node --check src/lsp-stdio.mjs && node --check src/neovim-rpc.mjs && node -e \"import('./src/index.ts').then(() => console.log('entry module loads'))\"",
+    "test:native": "node --test test/native/*.test.mjs",
+    "test:all": "npm test && npm run test:native"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
   }
 }
