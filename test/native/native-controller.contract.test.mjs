@@ -115,3 +115,25 @@ test("NT-06: unmapped symbol produces a local status without LSP, model or alter
   assert.match(f.seen.notifications.join(" "), /source|mapping|definition|symbol/i);
   controller.dispose();
 });
+test("Focus-P0: when user tabs to editor while LSP is pending, delayed hover never opens", async () => {
+  const { createNativeTranscriptController }=await native();
+  let release,focused=true;
+  const f=fixture({lsp:{query:()=>new Promise(resolve=>{release=resolve;})}});
+  const controller=createNativeTranscriptController(f);
+  const pending=controller.invoke("hover",{...f.snapshot,isCurrent:()=>focused});
+  await new Promise(resolve=>setImmediate(resolve));
+  focused=false;
+  release({contents:"outdated hover"});
+  await pending;
+  assert.equal(f.seen.overlay.length,0);
+  controller.dispose();
+});
+test("Navigation-P0: source modification after definition result cannot trigger wrong-file Neovim jump", async () => {
+  const {createNativeTranscriptController}=await native();
+  const f=fixture();
+  const controller=createNativeTranscriptController({...f,validateSource:async()=>false});
+  await controller.invoke("definition",f.snapshot);
+  assert.deepEqual(f.seen.opened,[]);
+  assert.match(f.seen.notifications.join(" "),/Source changed/i);
+  controller.dispose();
+});

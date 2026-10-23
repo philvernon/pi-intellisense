@@ -108,3 +108,35 @@ test("NT-07: hidden/reflowed anchor cannot leave an orphan positioned tooltip", 
     viewport: { ...viewport, width: 10 }, terminal
   }), null, "terminal rewrap invalidates the old display coordinate");
 });
+test("Focus-P0: Tab on a capturing hover closes it and returns to the Pi editor", async () => {
+  const { showInlineHover } = await popup();
+  let component, done = 0, returned = 0;
+  const ui = { custom(factory, options) {
+    assert.equal(options.overlay,true);
+    component=factory({requestRender(){}},{fg:(_colour,text)=>text},{},()=>{done++;});
+    return Promise.resolve();
+  }};
+  await showInlineHover({
+    ui, snapshot:{screenCursor:{row:9,col:10}}, markup:"Hover",
+    geometry:{terminal:{rows:35,cols:100},protectedRows:{top:1,bottom:5}},
+    onReturnToEditor:()=>{assert.equal(done,1,"close capturing overlay before returning to editor");returned++;}
+  });
+  component.handleInput("\t");
+  assert.equal(done,1);
+  assert.equal(returned,1);
+});
+
+test("Focus-P0: Esc dismisses the hover but must not change editor/transcript focus", async () => {
+  const {showInlineHover}=await popup();
+  let component, returned=0, done=0;
+  const ui={custom(factory){
+    component=factory({requestRender(){}},{fg:(_c,x)=>x},{},()=>done++);
+    return Promise.resolve();
+  }};
+  await showInlineHover({ui,snapshot:{screenCursor:{row:9,col:10}},markup:"Hover",
+    geometry:{terminal:{rows:35,cols:100},protectedRows:{top:1,bottom:5}},
+    onReturnToEditor:()=>returned++});
+  component.handleInput("\x1b");
+  assert.equal(done,1);
+  assert.equal(returned,0);
+});

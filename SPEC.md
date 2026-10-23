@@ -1,6 +1,6 @@
 # Pi IntelliSense — native transcript integration specification
 
-**Status (23 October 2026):** Native Pi-transcript hover and definition are now implemented in this repository plus the **local patched** `~/dev-trash/pi-tab-focus` checkout. Both suites pass, and a live Pi 1.3.0 fullscreen + TypeScript LSP + Neovim RPC smoke test demonstrated the original transcript `K` tooltip and `gd` jump. The installed npm `pi-tab-focus` 1.0.2 is **not** patched and the user's Sidekick/tmux setup has not yet been fully tested. The existing `/intel` viewer remains a transitional fallback.
+**Status (23 October 2026):** Native Pi-transcript hover, definition and deterministic Tab/Esc overlay focus are now implemented in this repository plus the **local patched** `~/dev-trash/pi-tab-focus` checkout. Both suites pass, and a live Pi 1.3.0 fullscreen + TypeScript LSP + Neovim RPC smoke test demonstrated the original transcript `K` tooltip and `gd` jump. The installed npm `pi-tab-focus` 1.0.2 is **not** patched and the user's Sidekick/tmux setup has not yet been fully tested. The existing `/intel` viewer remains a transitional fallback.
 
 **Verified runtime:** Pi 1.3.0 fullscreen, locally patched `pi-tab-focus` 1.0.1 (the npm 1.0.2 copy remains unmodified), TypeScript language server with TypeScript 5.9 and Neovim remote socket. Target includes the user's `pi-vim` and Neovim/Sidekick stack, which still require manual integration checks. No `pi-tools` changes were made.
 
@@ -10,10 +10,14 @@
 - `src/native/native-controller.ts`: invokes LSP requests, cancels stale results and routes hover/navigation without invoking the model or opening `/intel`.
 - `src/native/inline-hover.ts` and `overlay-geometry.ts`: use Pi's real `ctx.ui.custom(...,{overlay:true})`, with `row`/`col` beside the transcript cursor.
 - `src/bridge/register.ts` and `src/index.ts`: register the event bus handler and supply the real LSP/Neovim adapters.
-- `~/dev-trash/pi-tab-focus/src/index.ts` (local modified checkout): owns the visual cursor, dispatches `K`/`gd` and other `g` actions and produces the session/item/display snapshot. The patch is reproducible with `scripts/patch-tab-focus.mjs`.
+- `~/dev-trash/pi-tab-focus/src/index.ts` (local modified checkout): owns the visual cursor, dispatches `K`/`gd` and other `g` actions and produces the session/item/display snapshot. Use the current `main` branch of `philvernon/pi-tab-focus`, which contains the bridge source directly.
 - `bin/pi-intellisense`: launches the two local extensions together.
 
-**Known constraint:** code must have a resolvable file path in the transcript item (or supported structured tool path) and a matching current source line. Virtual unsaved-code document support exists as a contract helper but is not yet wired into the full live LSP backend. Very long wrapped lines and advanced Sidekick focus cases need further testing.
+**Current v2 behaviour:** structured `read` tool-call paths are resolved without needing a filename visibly printed in the transcript; file-backed source text and hash must match disk. Code fences with recognised language IDs can use an in-memory virtual LSP document for hover, verified live with TypeScript. `gd` only opens validated existing file destinations. Very long wrapped lines, complex diff provenance and Sidekick-specific focus cases still require testing. The pi-lens MCP provider is opt-in and its installed runtime is currently missing `typebox`.
+
+## V2 architecture and rollout record
+
+[docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md) records the follow-up implementation of the focus-state contract, structured transcript provenance, virtual document support and replaceable `CodeIntelligenceProvider`. The default provider remains the known-working standalone stdio LSP backend. The alternative pi-lens MCP adapter was implemented and mock-protocol-tested, but a real launch of the locally installed pi-lens 4.4.3 MCP process fails with missing `typebox` and **cannot** be presented as live-working. A genuine public in-process pi-lens LSP service remains preferable to duplicate pools, but no such integration has been verified.
 
 ## 1. User-visible contract (the product)
 

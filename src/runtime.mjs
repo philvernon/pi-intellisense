@@ -20,8 +20,7 @@ const normalizeLanguage=id=>id==="typescriptreact"?"typescript":id==="javascript
 export function languageForFile(file){return LANG_BY_EXT[path.extname(file).toLowerCase()]??null;}
 export function createLspManager({cwd,config={},onNotification=()=>{}}){
   const clients=new Map();
-  async function get(file,text) {
-    const languageId=languageForFile(file);
+  async function get(file,text,{uri=pathToFileURL(file).href,languageId=languageForFile(file)}={}) {
     if(!languageId)throw new Error("No configured language server for "+path.extname(file));
     const family=normalizeLanguage(languageId);
     const configServer=config.servers?.[family]??DEFAULT_SERVERS[family];
@@ -38,7 +37,7 @@ export function createLspManager({cwd,config={},onNotification=()=>{}}){
       try{await client.initialize();}catch(e){clients.delete(key);await transport.close().catch(()=>{});throw e;}
     }
     const client=clients.get(key);
-    await client.open({uri:pathToFileURL(file).href,text,version:1});
+    await client.open({uri,text,version:1});
     return client;
   }
   return {

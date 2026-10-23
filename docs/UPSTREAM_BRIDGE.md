@@ -53,3 +53,8 @@ User environment verified: Neovim config `~/dotfiles-stow/nvim/.config/nvim/lua/
 `Tab → v → K` displays a floating LSP signature/docs rectangle over the **original transcript**. `Esc` dismisses it without changing item/viewport/yank; `gd` navigates safely in existing Neovim; legacy keys continue working. Run `npm run test:native` in pi-intellisense and upstream tab-focus tests; manually validate Pi 1.3.0 fullscreen+pi-vim+Sidekick using a real TS server and source snippet.
 
 The required local upstream patch and a real Pi + TypeScript language server + Neovim socket PTY hover/definition smoke test have now been completed. Full Sidekick/tmux and release packaging checks remain outstanding.
+## V2 focus ownership patch
+
+Patched local tab-focus emits immutable snapshot data and a synchronous `isCurrent()` predicate that checks current item, cursor, focus epoch, transcript version and viewport. The IntelliSense controller uses it to suppress late responses. Pressing Tab in the capturing hover component closes the popup and publishes `pi-intellisense:return-to-editor:v1` with the session ID; tab-focus then exits its visual/transcript mode and returns TUI focus to the prompt editor. Escape closes only the popup. Ending visual mode also clears any pending `g` prefix so future keys cannot be misinterpreted after focus switches. See the 70 passing local upstream tests.
+
+This still leaves the installed npm `pi-tab-focus` distribution separate from the patched local checkout. The compatibility wrapper loads the local checkout directly. For the complete v2 roadmap consult [REFACTOR_PLAN.md](REFACTOR_PLAN.md).

@@ -1,6 +1,6 @@
 import {placeHoverOverlay} from "./overlay-geometry.ts";
 function sanitize(value:string) { return String(value).replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/gu,"").replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu,"").replace(/[\x00-\x08\x0b-\x1f\x7f]/gu,""); }
-export function showInlineHover({ui,snapshot,markup,geometry,focusState}:any) {
+export function showInlineHover({ui,snapshot,markup,geometry,focusState,onReturnToEditor}:any) {
  const anchor=snapshot.screenCursor;
  if(!anchor)return Promise.resolve();
  const opts=placeHoverOverlay({anchor,tooltip:{width:Math.min(68,Math.max(30,geometry.terminal.cols-4)),height:14},...geometry});
@@ -16,6 +16,11 @@ export function showInlineHover({ui,snapshot,markup,geometry,focusState}:any) {
      },
      handleInput(key:string) {
        if(key==="\x1b"||key==="escape")return done(undefined);
+       if(key==="\t"||key==="tab") {
+         done(undefined);
+         onReturnToEditor?.();
+         return;
+       }
        if(key==="j"||key==="\x1b[B")top=Math.min(Math.max(0,lines.length-1),top+1);
        if(key==="k"||key==="\x1b[A")top=Math.max(0,top-1);
        tui.requestRender?.();

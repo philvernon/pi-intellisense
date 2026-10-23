@@ -57,3 +57,16 @@ Environment: Pi 1.3.0 fullscreen, `pi-tab-focus` bridge-enabled version, `pi-vim
 - `pi-intellisense`: source verifier, LSP, popup/overlay + Neovim routing, native contract tests.
 - `pi-tab-focus`: visual cursor/source-region export and single keyboard dispatcher, upstream tests.
 - `pi-tools`: existing Sidekick/Neovim host wiring; change only if smoke tests require it.
+## V2 follow-up gates (implemented and verified 23 October 2026)
+
+| Gate | Automated and runtime evidence | Status |
+|---|---|---|
+| Focus | Inline hover Tab/Esc tests and actual fullscreen Pi PTY typing in prompt after Tab | Passed |
+| Cancellation | Delayed LSP return after `snapshot.isCurrent()` becomes false | Passed |
+| Source provenance | Original structured read call/path + disk-verified numbered lines, no visible filename | Passed in fixtures |
+| Generated source | Read-only virtual TS fenced source with real TS language server hover in Pi | Passed |
+| No unsafe jumps | Original source hash rechecked after LSP returns; Neovim target validated | Passed in automated tests |
+| Providers | Read-only standalone and pi-lens MCP adapter, MCP mock child process | Passed in tests; **real pi-lens MCP unavailable** |
+| Real sidekick | Sidekick/tmux-hosted Pi and Neovim, pane focus and inherited socket | Not tested |
+
+For full implementation scope and remaining source-wrap/reflow cases see [REFACTOR_PLAN.md](REFACTOR_PLAN.md). No additional Pi prompt/model turns are caused by keyboard LSP queries.

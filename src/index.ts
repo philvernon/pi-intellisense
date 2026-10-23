@@ -15,11 +15,12 @@ import {openInNeovim} from "./neovim.mjs";
 import {connectNeovim} from "./neovim-rpc.mjs";
 import {openCodePane} from "./ui/code-pane.ts";
 import {createNativeTranscriptController} from "./native/native-controller.ts";
-import {resolveLiveTranscriptSymbol} from "./native/live-source.ts";
+import {resolveTranscriptProvenance} from "./native/provenance-resolver.mjs";
+import {createProvider} from "./providers/index.mjs";
 
 const SHA=(s:string)=>createHash("sha256").update(s).digest("hex");
 const MAX_FILE=250_000;
-const DEFAULT_CONFIG={timeoutMs:5000,servers:{},nvimSocket:"env:NVIM"};
+const DEFAULT_CONFIG={timeoutMs:5000,servers:{},nvimSocket:"env:NVIM",provider:"standalone"};
 type AnyCtx=ExtensionContext & {sessionManager:any};
 function textParts(message:any):string[] {
   const value=message?.content;
@@ -90,7 +91,10 @@ async function configFromDisk() {
         servers[lang]=server;
     }
     return {...DEFAULT_CONFIG,timeoutMs:Number.isInteger(data.timeoutMs)&&data.timeoutMs>0?data.timeoutMs:5000,
-      nvimSocket:typeof data.nvimSocket==="string"?data.nvimSocket:"env:NVIM",servers};
+      nvimSocket:typeof data.nvimSocket==="string"?data.nvimSocket:"env:NVIM",
+      provider:data.provider==="pi-lens-mcp"?"pi-lens-mcp":"standalone",
+      piLensServer:typeof data.piLensServer==="string"&&path.isAbsolute(data.piLensServer)?data.piLensServer:undefined,
+      servers};
   } catch{return DEFAULT_CONFIG;}
 }
 function configuredSocket(config:any):string|undefined {
@@ -143,6 +147,8 @@ export default function piIntelliSense(pi:ExtensionAPI){
   let unregister:undefined|(()=>void);
   let nativeController: ReturnType<typeof createNativeTranscriptController>|undefined;
   let latestNativeRevision = "";
+  let provider:any;
+  let providerKind:string|undefined;
   const diagnostics:Record<string,any[]>={};
 
   async function ensureRuntime(ctx:AnyCtx) {
@@ -172,17 +178,55 @@ export default function piIntelliSense(pi:ExtensionAPI){
     active=ctx as AnyCtx;
     const sid=sessionId(active);
     nativeController?.dispose();
+    provider?.close?.();provider=undefined;providerKind=undefined;
     nativeController=createNativeTranscriptController({
       ui:ctx.ui,
+      requestEditorFocus:()=>pi.events.emit("pi-intellisense:return-to-editor:v1",{sessionId:sid}),
       getSession:()=>({sessionId:sid,transcriptRevision:latestNativeRevision}),
-      resolveSymbol:(snapshot:any)=>resolveLiveTranscriptSymbol(snapshot,{root:rootFor(ctx)}),
+      resolveSymbol:(snapshot:any)=>resolveTranscriptProvenance(snapshot,{
+        root:rootFor(ctx),entries:ctx.sessionManager.getBranch?.()??[]
+      }),
       lsp:{query:async(request:any)=>{
-        const file=fileURLToPath(request.uri);
-        if(!within(rootFor(ctx),file))throw new Error("Source outside workspace");
-        const text=await fs.readFile(file,"utf8");
-        const client=await (await ensureRuntime(ctx)).get(file,text);
-        return client.query(request);
+        const settings=await configFromDisk();
+        const kind=settings.provider==="pi-lens-mcp"?"pi-lens-mcp":"standalone";
+        if(!provider||providerKind!==kind){
+          await provider?.close?.();
+          providerKind=kind;
+          provider=createProvider({
+            kind,cwd:rootFor(ctx),
+            piLensServer:settings.piLensServer??path.join(homedir(),".pi","agent","npm","node_modules","pi-lens","dist","mcp","server.js"),
+            standaloneQuery:async(q:any)=>{
+              if(q.source?.kind==="virtual-document"){
+                const lang=q.source.languageId;
+                const ext=lang.startsWith("typescript")?".ts":
+                  lang.startsWith("javascript")?".js":
+                  lang==="python"?".py":lang==="rust"?".rs":
+                  lang==="go"?".go":lang==="lua"?".lua":null;
+                if(!ext)throw new Error("Virtual document language not supported: "+lang);
+                const file=path.join(rootFor(ctx),".pi-intellisense-virtual",SHA(q.source.text)+ext);
+                const uri=pathToFileURL(file).href;
+                const client=await (await ensureRuntime(ctx)).get(file,q.source.text,{uri,languageId:lang});
+                return client.query({...q,uri});
+              }
+              const file=fileURLToPath(q.uri);
+              if(!within(rootFor(ctx),file))throw new Error("Source outside workspace");
+              const code=await fs.readFile(file,"utf8");
+              if(q.source?.fileHash&&SHA(code)!==q.source.fileHash)
+                throw new Error("Source changed since transcript was rendered; hover/navigation cancelled");
+              const client=await (await ensureRuntime(ctx)).get(file,code);
+              return client.query(q);
+            }
+          });
+        }
+        return provider.query(request);
       }},
+      validateSource:async(source:any)=>{
+        if(source?.kind==="virtual-document")return true;
+        if(!source?.fileHash||typeof source.uri!=="string"||!source.uri.startsWith("file://"))return false;
+        const file=fileURLToPath(source.uri);
+        if(!within(rootFor(ctx),file))return false;
+        return SHA(await fs.readFile(file,"utf8").catch(()=>""))===source.fileHash;
+      },
       neovim:{open:async(location:any)=>{
         await ensureRuntime(ctx);
         return destination(ctx,{uri:location.uri,
@@ -207,6 +251,7 @@ export default function piIntelliSense(pi:ExtensionAPI){
   pi.on("session_shutdown",async()=>{
     unregister?.();unregister=undefined;
     nativeController?.dispose();nativeController=undefined;latestNativeRevision="";active=undefined;
+    await provider?.close?.();provider=undefined;providerKind=undefined;
     await manager?.close();manager=undefined;
     for(const key of Object.keys(diagnostics))delete diagnostics[key];
   });

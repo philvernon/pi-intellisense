@@ -55,3 +55,12 @@ export function visualToLspCharacter(line, displayCol, { tabSize = 4 } = {}) {
   return displayCol <= col ? utf16 : undefined;
 }
 export const displayColumnToUtf16 = visualToLspCharacter;
+/** Terminal display-cell width, used to map prefixes in styled transcript lines. */
+export function terminalCells(text, {tabSize=4}={}) {
+  let col=0;
+  for (const {segment} of segmenter.segment(stripAnsi(text))) {
+    const width=segment==="\t"?tabSize-(col%tabSize):glyphWidth(segment);
+    col+=width;
+  }
+  return col;
+}

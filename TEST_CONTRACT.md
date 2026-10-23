@@ -151,3 +151,11 @@ Native test IDs NT-01..NT-10 now pass. See [docs/TEST_PLAN.md](docs/TEST_PLAN.md
 - Native automated tests and a real Pi+Neovim+Sidekick E2E test are green.
 
 The original Pi transcript `K` hover and `gd` jump were exercised in a live local PTY with a real TypeScript language server and headless Neovim. Still verify Sidekick/tmux, alternate languages and text-wrapping edge cases.
+## V2 contracts now exercised (2026-10-23)
+
+- `test/native/inline-hover.contract.test.mjs`: a capturing hover handles `Tab` by dismissing itself and handing keyboard ownership back to the Pi prompt; `Esc` dismisses only the hover. `test/native/native-controller.contract.test.mjs` ensures a late LSP response after lost focus never opens.
+- `test/provenance-resolver.test.mjs`: structured `read` tool-call ID/path survives even if the visible tool result omits the filename; numbered lines are verified against disk, and unsupported/missing source fails closed. Generated language-tagged fences become session-scoped read-only virtual documents.
+- `test/providers.test.mjs` and `test/mcp-transport.test.mjs`: replaceable standalone and opt-in pi-lens MCP provider implementations, read-only navigation arguments, 1-based pi-lens positions, child-process protocol. The latter uses a mock pi-lens MCP process, **not** a live pi-lens instance.
+- `pi-tab-focus/src/tests/index.test.ts` now tests transcript `K`/`gd`, focused-popup Tab return and clearing stale `g` prefixes. Live Pi fullscreen PTY tests also confirmed the actual key paths.
+
+The standalone backend supports virtual TypeScript source via in-memory LSP `didOpen` on synthetic project-local file URIs without touching disk. The experimental pi-lens MCP backend does not share the already-loaded pi-lens server pool and was blocked in the local installation by a missing `typebox` dependency.
