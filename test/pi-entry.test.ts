@@ -329,6 +329,23 @@ test("ordinary assistant fences use workspace LSP without prior reads or virtual
     }
   }));
 
+test("registered references picker uses canonical workspace-relative labels", () =>
+  workspace(async (root) => {
+    const h = harness(root);
+    try {
+      await h.start();
+      await h.registration().invoke("references", snapshot());
+      assert.deepEqual(h.notices, []);
+      assert.equal(h.overlays.length, 1);
+      assert.equal(
+        h.overlays[0].text,
+        "Choose references location\n> a.ts:2:13\n  c.ts:2:13",
+      );
+    } finally {
+      await h.shutdown();
+    }
+  }));
+
 test("K collapses workspace aliases to one definition; gr alone lists usages", () =>
   workspace(
     async (root) => {

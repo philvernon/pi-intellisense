@@ -136,6 +136,7 @@ export default function piIntelliSense(pi: ExtensionAPI) {
       ).query(request);
     };
     const controller = createNativeTranscriptController({
+      workspaceRoot: root,
       ui: ctx.ui,
       requestEditorFocus: () =>
         pi.events.emit("pi-intellisense:return-to-editor:v1", { sessionId }),

@@ -188,7 +188,7 @@ for (const distinct of [false, true]) {
           assert.match(h.overlays[0].text, /other\.ts:1:/);
           assert.doesNotMatch(h.overlays[0].text, /reexport\.ts|LSP hover/);
         } else {
-          assert.match(h.overlays[0].text, /LSP hover/);
+          assert.doesNotMatch(h.overlays[0].text, /LSP hover|Esc close/);
           assert.match(
             h.overlays[0].text,
             /function orbitBuild\(value: number\): string/,

@@ -243,16 +243,18 @@ for (const kind of ["annotated", "read", "read-quote", "workspace"])
           ...symbolKeys,
           "K",
         );
+        const hoverSignature = /function greet\(name: string\): string[ \t]*$/m;
         for (let i = 0; i < 100; i++) {
           screen = (await tmux("capture-pane", "-p", "-t", pane)).stdout;
-          if (screen.includes("LSP hover")) break;
+          if (hoverSignature.test(screen)) break;
           await delay(100);
         }
         assert.match(
           screen,
-          /LSP hover/,
-          "K must open inline hover\n" + screen,
+          hoverSignature,
+          "K must render the complete inline hover signature\n" + screen,
         );
+        assert.doesNotMatch(screen, /LSP hover|Esc close · Tab prompt/);
         assert.match(screen, /greet/);
         if (usageQuote) assert.match(screen, /name: string/);
         await tmux("send-keys", "-t", pane, "Escape");

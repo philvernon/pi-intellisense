@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type {
   ControllerDependencies,
   SourceRequest,
@@ -93,6 +94,7 @@ function fixture(overrides: Partial<ControllerDependencies> = {}) {
     },
   };
   const dependencies: ControllerDependencies = {
+    workspaceRoot: "/project",
     ui,
     lsp,
     neovim,
@@ -334,6 +336,114 @@ test("multi-result picker scrolls beyond twelve locations and displays no termin
   controller.dispose();
 });
 
+for (const width of [64, 32]) {
+  test(`picker decodes relative paths and retains filename/position at width ${width}`, async () => {
+    const { createNativeTranscriptController } = await native();
+    const locations = [
+      "file:///project/src/one%20dir/shared%20%23%3F.ts",
+      "file:///project/src/two%20dir/shared%20%23%3F.ts",
+      `file:///project/${"long-directory/".repeat(15)}feature/target%20%23%3F.ts`,
+    ].map((uri, i) => ({
+      uri,
+      range: {
+        start: { line: i === 2 ? 122 : i, character: i === 2 ? 45 : 2 },
+        end: { line: i === 2 ? 122 : i, character: i === 2 ? 46 : 3 },
+      },
+    }));
+    const f = fixture({ lsp: { query: async () => locations } });
+    let rows: string[] = [];
+    f.ui.custom = customUI(
+      (factory) =>
+        new Promise((done) => {
+          const component = mountComponent(factory, done);
+          rows = component.render(width);
+          component.handleInput("j");
+          component.handleInput("j");
+          assert.match(
+            component.render(width)[3],
+            /^> .*target #\?\.ts:123:46$/,
+          );
+          component.handleInput("\r");
+        }),
+    );
+    const validated: NavigationLocation[] = [];
+    const controller = createNativeTranscriptController({
+      ...f,
+      validateTarget: async (location) => {
+        validated.push(location);
+        return location;
+      },
+    });
+    await controller.invoke("references", f.snapshot);
+    assert.deepEqual(rows.slice(1, 3), [
+      "> src/one dir/shared #?.ts:1:3",
+      "  src/two dir/shared #?.ts:2:3",
+    ]);
+    assert.match(
+      rows[3],
+      /^  …\/(?:long-directory\/)*feature\/target #\?\.ts:123:46$/,
+    );
+    assert.ok(rows.every((row) => visibleWidth(row) <= width));
+    assert.doesNotMatch(rows.join("\n"), /file:|\/project|%20|%23|%3F/);
+    const selected = { uri: locations[2].uri, line: 122, character: 45 };
+    assert.deepEqual(validated, [selected]);
+    assert.deepEqual(f.seen.opened, [selected]);
+    assert.deepEqual(f.seen.notifications, []);
+    controller.dispose();
+  });
+}
+
+test("picker safely displays malformed/non-file URIs and sanitizes decoded terminal controls", async () => {
+  const { createNativeTranscriptController } = await native();
+  const uris = [
+    "file:///project/bad%ZZ.ts",
+    "https://example.test/remote%20file.ts",
+    "file:///project/%1B%5D52%3Bc%3Bunsafe%07safe%0A%09%1B%5B31m%7F%C2%9B.ts",
+    "file:///elsewhere/outside.ts",
+  ];
+  const f = fixture({
+    lsp: {
+      query: async () =>
+        uris.map((uri) => ({
+          uri,
+          range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 1 },
+          },
+        })),
+    },
+  });
+  let rows: string[] = [];
+  f.ui.custom = customUI(
+    (factory) =>
+      new Promise((done) => {
+        const component = mountComponent(factory, done);
+        rows = component.render(64);
+        component.handleInput("\r");
+      }),
+  );
+  const validated: NavigationLocation[] = [];
+  const controller = createNativeTranscriptController({
+    ...f,
+    validateTarget: async (location) => {
+      validated.push(location);
+      return null;
+    },
+  });
+  await controller.invoke("definition", f.snapshot);
+  assert.deepEqual(rows.slice(1), [
+    "> file:///project/bad%ZZ.ts:1:1",
+    "  https://example.test/remote%20file.ts:1:1",
+    "  safe.ts:1:1",
+    "  ../elsewhere/outside.ts:1:1",
+  ]);
+  assert.doesNotMatch(rows.join(""), /[\x00-\x1f\x7f-\x9f]/u);
+  assert.deepEqual(validated, [{ uri: uris[0], line: 0, character: 0 }]);
+  assert.deepEqual(f.seen.opened, []);
+  assert.deepEqual(f.seen.notifications, []);
+  controller.dispose();
+});
+
 test("editor handoff retains cancellation and async source currency through delayed startup", async () => {
   const f = fixture(),
     { createNativeTranscriptController } = await native();
@@ -525,6 +635,10 @@ test("ambiguous workspace symbols use the existing location picker", async () =>
     (factory) =>
       new Promise((done) => {
         const component = mountComponent(factory, done);
+        assert.deepEqual(component.render(64).slice(1), [
+          "> src/target1.ts:2:4",
+          "  src/target2.ts:3:4",
+        ]);
         component.handleInput("j");
         component.handleInput("\r");
       }),
