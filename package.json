@@ -20,12 +20,12 @@
     ]
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && node -e \"import('./src/index.ts').then(() => console.log('extension entry loads'))\"",
-    "test:native": "node --test test/native/*.test.mjs",
+    "test:native": "node --test test/native/*.test.ts",
     "test:all": "npm test && npm run test:native",
-    "test:integration": "node --test test/integration/*.test.mjs"
+    "test:integration": "node --test test/integration/*.test.ts"
   },
   "overrides": {
     "@earendil-works/pi-coding-agent": {

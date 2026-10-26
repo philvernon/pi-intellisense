@@ -1,69 +1,59 @@
 # Native transcript IntelliSense
 
-The original Pi transcript is the code viewer. `pi-tab-focus` owns keyboard navigation; this extension resolves source identity, queries a local language server, renders inline overlays and opens verified locations in Neovim.
+## Scope and interaction
 
-## Product contract
+The existing Pi transcript is the only code viewer. `pi-tab-focus` owns input; this extension resolves source context, queries a local language server, presents inline UI and opens validated destinations in Neovim.
 
-- `Tab` enters existing transcript focus, `v` enters its visual cursor, `K` shows an LSP hover next to that symbol.
-- `Esc` dismisses only the hover. `Tab` dismisses and returns to the prompt. Pending responses cannot reopen UI after the invocation loses currency.
-- `gd` opens a definition. `gr`, `gD`, `gi`, `gy` use the same location flow. Multiple destinations require an inline picker.
-- If a Neovim socket is configured, reuse it. Otherwise lazily create a visible tmux split running Neovim, wait for RPC readiness and reuse it for this session.
-- No model turn, source edit, second code viewer, competing input listener or global installation change.
+- `Tab` focuses the transcript, `v` enters the existing visual cursor and `K` requests hover beside the symbol.
+- `Esc` dismisses only hover. `Tab` dismisses and returns to the prompt. Existing motions, selection, yanks and item-mode `K` remain intact.
+- `gd` definition, `gr` references, `gD` declaration, `gi` implementation and `gy` type definition share location validation and an inline picker for multiple destinations.
+- No model turn, source edit, completion application, separate viewer, competing input listener, transcript upload or automatic global configuration change.
 
-## Workspace context by default
+## Context resolution
 
-An identifier in the transcript is resolved against the current workspace through LSP `workspace/symbol`. The language server returns real file locations; one exact-name match is selected automatically and multiple matches use the normal location picker. Hover queries the selected real document. Definition jumps directly to the returned declaration. Other navigation requests use that document and position. No annotations or prior model reads are required, and chat text is not queried as an isolated fake file.
+**Workspace-symbol lookup is the default, not semantic interpretation of arbitrary transcript text.** Extract the visible identifier and ask LSP `workspace/symbol`. Resolve exact-name hits through `textDocument/definition` and deduplicate real definition targets before offering a picker; imports and re-exports of one declaration are not separate choices. One distinct target is automatic; genuinely different targets require selection. At the resolved real position, `K` requests `textDocument/hover`, `gd` requests `textDocument/definition` and `gr` requests `textDocument/references` without including the declaration. Known source positions bypass workspace search. A name match does not prove transcript scope, receiver identity, inferred types or overload resolution. Missing matches are reported without presenting isolated-snippet `any` as project-aware information.
 
-Fence language selects the server where available; otherwise a workspace source file supplies the language. Cold TypeScript/JavaScript lookup attaches one actual source file to load its configured project, preferring `src/` and skipping dependency/generated directories. A semantic-only TypeScript server avoids incomplete cold-start symbol results. Missing workspace symbols are reported directly; separate monorepo projects and symbol kinds a server does not index are not guessed.
+Fence language selects a server when available; otherwise a workspace source supplies the language. Cold TypeScript/JavaScript lookup attaches one real source file to load its project, preferring `src/`, excluding dependency/generated/hidden trees and symlink discovery. Use a semantic TypeScript server rather than incomplete syntax-only cold results. Independent monorepo projects and unindexed symbol kinds are not guessed.
 
-Known source positions from native `read` results, optional annotations, and uniquely matching read-backed quotes remain fast paths. Quotes can remove a common leading indent while preserving real source columns. Ambiguous or stale unannotated read history does not prevent workspace lookup. Failed/truncated reads and generated notices never establish a source position. `before_agent_start` asks for ordinary language fences, with no metadata/read-history requirement.
+Exact positions are optional fast paths:
 
-## Optional source annotations
+1. Native `read` provenance uses the exact persisted `toolCallId`, normalized path and actual offset/limit. Raw output must match disk. Reconstruct limit notices only from the actual arguments; never strip number-like raw source as line labels or borrow unrelated tool results.
+2. Unannotated quotes may recover a unique contiguous location from successful read history, allowing common leading indentation changes while preserving UTF-16 columns. Failed/truncated reads, stale candidates and ambiguous matches cannot assert file identity.
+3. Optional fence metadata follows `ts source="src/client.ts" lines="42-43"`: language token, JSON-quoted path, quoted inclusive 1-based range. Validate the complete range against current source, normalizing only CRLF. Malformed, stale, missing or unsafe explicit bindings fail locally rather than falling back to virtual context.
 
-````markdown
-```ts source="src/client.ts" lines="42-43"
-const client = createClient();
-await client.connect();
-```
-````
+Original assistant Markdown is required for fence identity. Hide annotation attributes only through `registerMarkdownTransformer`; retain session text. Prose filenames are not authority. Whole displayed regions must match contiguously and unambiguously, within actual fence boundaries and original block order. Repeated source lines use their displayed row. Map Pi's three-space tabs, ANSI styling, wide glyphs and combining marks to original UTF-16 positions. Unsupported wrapping, truncation, oversized regions (>2,000 lines) and diffs cannot claim exact file positions, though visible names can use workspace lookup.
 
-The convention is a language token, JSON-quoted `source` path, then a quoted `lines` range. Ranges are inclusive and 1-based; a single line may use `lines="42"`. Paths are candidates, not authority. The entire range must exactly match current source, normalizing CRLF line endings only. Indentation is significant. Malformed, missing, out-of-root or stale bindings never fall back to virtual documents.
+`before_agent_start` requests ordinary language fences, not annotations or prior reads. Low-level virtual-document support remains tested, but is not the default product fallback for arbitrary transcript text.
 
-`registerMarkdownTransformer` hides optional attributes only in assistant rendering; original session content remains intact.
+## Bridge and request lifetime
 
-## Single production mapping path
+Register via `pi-intellisense:register:v1`, unregister via `pi-intellisense:unregister:v1`, and handle load order/reload via `pi-tab-focus:availability:v1`. The typed registration exposes only implemented semantic actions and validates unknown snapshot/action payloads at the boundary.
 
-1. `src/index.ts` registers with the existing tab-focus event bus and supplies runtime adapters.
-2. `src/native/provenance-resolver.mjs` resolves an original message fence or an exact persisted `read` call/result.
-3. `src/native/transcript-source.ts` constructs complete display regions and maps the actual row/cell cursor to an identifier and UTF-16 source offset.
-4. `src/native/native-controller.ts` sends the query, checks source/currency, presents an overlay or selects a destination.
-5. `src/locations.mjs`, `src/neovim-launcher.mjs`, `src/neovim.mjs` validate the target and perform structured Msgpack-RPC navigation.
+Snapshots carry original `sourceText`, exact `toolCallId`, styled `renderedLines`, absolute `renderedStartRow`, session/item identity, transcript/layout revisions, visual/screen cursor and `isCurrent()`. Hidden annotation changes invalidate currency even when rendering is unchanged. Item, input/focus intent, cursor, reflow and viewport changes suppress obsolete requests.
 
-Read-result provenance uses `toolCallId`, Pi-normalized read paths and the actual `read` offset/limit. Raw output must match disk; native limit notices are reconstructed only from the actual call arguments. Number-like raw text is never guessed to be line labels. It never scans unrelated tool results for a matching line.
+After selecting a target, `isNavigationCurrent()` permits reflow caused by the operation's own tmux split, but rejects new input, source/session changes or newer requests. `withNavigationPicker(run)` exempts only that request's own picker input, not foreign transient UI. Preserve visible startup/RPC errors while navigation intent remains current. Revalidate source hashes after asynchronous work and immediately before navigation RPC.
 
-Fences without a verified read-context match and ordinary transcript identifiers use workspace-symbol lookup. A filename in prose is not treated as authoritative source metadata. Real-file destinations returned by LSP still require workspace validation.
+Session replacement/shutdown unregisters handlers, cancels pending work, closes overlays and owned LSP/RPC resources, and prevents late responses from reopening UI. Do not kill Neovim. Actual keyboard ownership and observer behavior are tested in the companion checkout, not a parallel implementation here. Pi 1.3 assistant `lastMessage` access is a private compatibility boundary: future renderer changes must fail to unknown provenance, never guessed source identity.
 
-Mapping requires the entire displayed code region to match contiguously and unambiguously. Assistant regions are confined to actual rendered fence boundaries in original block order; identical prose or another fence cannot borrow their source identity. Repeated source lines within one region are distinguished by row. Pi 1.3's three-space tab expansion is mapped back to original offsets, and widths use Pi's own `visibleWidth`. ANSI styling, wide glyphs and combining marks do not become source columns. Unsupported wrapping/truncation cannot establish an exact source position, but the visible identifier can still use workspace-symbol lookup. Lossless renderer-level wrapped spans and diffs remain future work.
+## Language-server and editor safety
 
-## Bridge ownership and lifetime
+- Start configured stdio servers lazily with structured argv and `shell: false`; no rendering hook starts a server or waits synchronously for LSP.
+- Share initialization and cold project attachment. Cancelling one waiter cannot cancel others or poison the cache. Bound requests/startup and suppress stale results. Close owned transports idempotently.
+- Advertise UTF-16 only; reject incompatible negotiation. Normalize hover and Location/LocationLink responses, deduplicate destinations and sanitize terminal display text.
+- Canonicalize workspace/source/destinations with realpath. Open only existing files inside the workspace, not arbitrary URI schemes, path-prefix collisions, escaped symlinks or guessed repository hits.
+- Prefer an explicitly configured socket, then configured environment sockets. `auto` forces on-demand launch; never discover arbitrary Neovim processes or fall back after an explicit socket failure.
+- Without a socket, launch one visible Neovim split in the current tmux server, using a private socket directory, bounded readiness and one shared in-flight launch. Reuse is session-scoped. Replace only after confirmed editor exit; uncertain failures must not duplicate or kill editors.
+- Send filenames and positions as structured RPC data, never interpolated shell/Ex/Lua instructions. Convert zero-based UTF-16 positions to one-based Neovim lines and zero-based UTF-8 byte columns. Respect editor failures without replaying navigation blindly. Existing-editor host focus is not switched automatically.
 
-The patched `pi-tab-focus` observer carries original assistant text, exact tool-call identity, rendered lines and their absolute start row. Its snapshot also includes session/item identity, transcript/layout revisions, visual/screen cursor and `isCurrent()`.
+## Implementation and verification boundary
 
-Hidden annotation changes invalidate the observer even if the rendered text is unchanged. Snapshot currency includes item, focus, cursor, reflow and viewport. Both extensions clean up on session replacement/shutdown. After a navigation target is resolved, a separate `isNavigationCurrent()` checks original item/source identity and explicit input/focus intent, allowing its own tmux split resize without cancelling the committed jump. It still cancels on new input, source changes, session exit or a newer request, and source hashes are revalidated through startup immediately before RPC. Foreign transient UI invalidates pending requests; `withNavigationPicker(run)` exempts only the operation's own location picker input. Startup/RPC errors remain visible after the split's own reflow while navigation intent is current. The real keyboard-owner tests live in `pi-tab-focus`, not a parallel adapter in this repository.
+Production entry is `src/index.ts`; provenance/mapping/controller live under `src/native/`, bridge under `src/bridge/`, and LSP/runtime/provider and Neovim adapters in their corresponding source modules. Local imports explicitly use `.ts`; Pi loads through `jiti`, Node executes erasable TypeScript directly, and strict `noEmit` checking includes tests. Use Node's built-in test runner only.
 
-## Editor and safety policy
+Acceptance gates:
 
-- Prefer explicit configuration, then configured environment sockets; `auto` forces an on-demand split.
-- Never discover arbitrary running Neovim processes or launch a fallback after an explicit socket failure.
-- Use the current tmux server and structured command arguments. Paths are RPC data, not interpolated shell or Ex code.
-- Use a private socket directory, bounded startup and a single in-flight launch. A managed editor is replaced only when its exit is confirmed.
-- Do not kill an editor on Pi shutdown or uncertain errors. Existing-editor host focus is not switched automatically.
-- Canonicalize the workspace, constrain source/targets via realpath and revalidate file hashes around requests/navigation.
-- Sanitize LSP display text and suppress cancelled/stale results.
-- Advertise UTF-16 only and reject incompatible negotiated encodings. Concurrent cold requests await the same initialization promise; cancelling one waiter does not cancel other requests.
+- Unit/native suites cover production components, malformed bridge payloads/actions, complete-range provenance, unsafe/stale/ambiguous input, Unicode coordinates, cancellation through startup, overlay/picker ownership, source revalidation, initialization races and structured transport/editor behavior.
+- `npm run build` strictly checks source and tests, then imports the entry without emitting output files.
+- Deliberate integration runs use real TypeScript LSP, tmux and Neovim, verifying imported-method quote recovery, cold workspace lookup, editor reuse and exact buffer/cursor positions.
+- With `PI_TAB_FOCUS_SOURCE` pointing to the patched bridge, offline saved Pi sessions exercise actual `K`/`gd` for annotated fences, expanded reads, read-backed quotes and workspace-only code; `gr` opens a usage rather than the declaration and reuses the same editor. No model requests or user tmux/editor sessions are involved. Companion tests separately verify the real input owner.
 
-## Verification boundary
-
-`npm run build` typechecks the source and imports the extension. Default and native suites exercise production components. Optional integration tests exercise real TypeScript LSP (including imported-method resolution from an unannotated quote), real tmux/Neovim, and real offline Pi transcript input for unannotated read-backed quotes, annotated fences and expanded reads.
-
-See [VERIFICATION.md](VERIFICATION.md) for current results. Full Sidekick embedding, arbitrary renderer changes and wrapped/diff provenance are not certified.
+Setup, measured results and prerequisites are maintained in [README.md](README.md). The local bridge is not assumed published. Full Sidekick embedding, pi-vim outer modes, arbitrary renderer changes, lossless wrapped/diff provenance and all language servers remain outside the verified boundary. The experimental MCP provider is a separate process, not a shared Pi pool.
