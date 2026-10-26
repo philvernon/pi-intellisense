@@ -112,7 +112,7 @@ export function createNativeTranscriptController({
     if (locations.length === 1) return locations[0];
     const options = placeHoverOverlay({
       anchor: snapshot.screenCursor!,
-      tooltip: { width: 64, height: Math.min(14, locations.length + 2) },
+      tooltip: { width: 64, height: Math.min(14, locations.length + 1) },
       terminal: geometry?.terminal ?? {
         rows: process.stdout.rows || 42,
         cols: process.stdout.columns || 120,
@@ -130,24 +130,30 @@ export function createNativeTranscriptController({
           let focus = 0;
           return {
             render(width: number) {
-              return [
-                truncateToWidth(
-                  theme.fg("accent", "Choose " + action + " location"),
-                  width,
-                ),
-                ...locations
-                  .slice(Math.max(0, focus - 11), Math.max(12, focus + 1))
-                  .map((x, i) => {
-                    const selected = i + Math.max(0, focus - 11) === focus;
-                    return truncateToWidth(
-                      theme.fg(
-                        selected ? "accent" : "text",
-                        (selected ? "> " : "  ") +
-                          locationLabel(x, workspaceRoot, width - 2),
+              const visibleRows = Math.max(1, options.maxHeight - 1);
+              const start = Math.max(0, focus - visibleRows + 1);
+              const heading =
+                options.maxHeight > 1
+                  ? [
+                      truncateToWidth(
+                        theme.fg("accent", "Choose " + action + " location"),
+                        width,
                       ),
-                      width,
-                    );
-                  }),
+                    ]
+                  : [];
+              return [
+                ...heading,
+                ...locations.slice(start, start + visibleRows).map((x, i) => {
+                  const selected = i + start === focus;
+                  return truncateToWidth(
+                    theme.fg(
+                      selected ? "accent" : "text",
+                      (selected ? "> " : "  ") +
+                        locationLabel(x, workspaceRoot, width - 2),
+                    ),
+                    width,
+                  );
+                }),
               ];
             },
             handleInput(key: string) {

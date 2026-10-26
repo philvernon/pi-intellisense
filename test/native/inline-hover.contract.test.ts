@@ -16,7 +16,7 @@ const popup = () => import("../../src/native/inline-hover.ts");
 
 const terminal = { rows: 42, cols: 120 };
 
-test("NT-02: popup is adjacent to symbol, within edges and outside fixed prompt/status rows", async () => {
+test("NT-02: popup is below the symbol, within edges and outside fixed prompt/status rows", async () => {
   const { placeHoverOverlay } = await projection();
   const options = placeHoverOverlay({
     anchor: { row: 16, col: 20 },
@@ -24,17 +24,14 @@ test("NT-02: popup is adjacent to symbol, within edges and outside fixed prompt/
     tooltip: { width: 54, height: 14 },
     protectedRows: { top: 2, bottom: 4 },
   });
-  assert.ok(options.row >= 2 && options.row < 38);
-  assert.ok(
-    options.col > 20,
-    "prefer tooltip next to symbol, not in a separate panel",
-  );
+  assert.equal(options.row, 17);
+  assert.equal(options.col, 20);
   assert.ok(options.col + options.width <= 120);
   assert.ok(options.row + options.maxHeight <= 38);
   assert.notEqual(options.anchor, "center");
 });
 
-test("NT-02: popup flips to visible side if symbol is near the right/bottom edges", async () => {
+test("NT-02: popup flips above the symbol near the right/bottom edges", async () => {
   const { placeHoverOverlay } = await projection();
   const options = placeHoverOverlay({
     anchor: { row: 35, col: 115 },
@@ -55,7 +52,6 @@ test("hover placement prefers the row below the symbol and stays within the righ
     terminal,
     tooltip: { width: 54, height: 14 },
     protectedRows: { top: 2, bottom: 4 },
-    placement: "below",
   });
   assert.equal(options.row, 17);
   assert.equal(options.col, 66);
@@ -70,7 +66,6 @@ test("hover placement flips above near the bottom and bounds tall content withou
       terminal,
       tooltip: { width: 54, height },
       protectedRows: { top: 2, bottom: 4 },
-      placement: "below",
     });
     assert.ok(options.row >= 2);
     assert.equal(options.row + options.maxHeight, 35);

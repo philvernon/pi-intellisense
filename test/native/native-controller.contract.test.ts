@@ -336,6 +336,56 @@ test("multi-result picker scrolls beyond twelve locations and displays no termin
   controller.dispose();
 });
 
+for (const { rows, row, height } of [
+  { rows: 12, row: 3, height: 4 },
+  { rows: 7, row: 1, height: 1 },
+]) {
+  test(`picker uses shared below/above placement and keeps selection visible in ${height} rows`, async () => {
+    const { createNativeTranscriptController } = await native();
+    const locations = Array.from({ length: 8 }, (_, i) => ({
+      uri: `file:///project/target${i}.ts`,
+      range: {
+        start: { line: i, character: 0 },
+        end: { line: i, character: 1 },
+      },
+    }));
+    const f = fixture({
+      geometry: {
+        terminal: { rows, cols: 80 },
+        protectedRows: { top: 1, bottom: 5 },
+      },
+      lsp: { query: async () => locations },
+    });
+    f.snapshot.screenCursor = { row: 2, col: 3 };
+    f.ui.custom = customUI(
+      (factory, options) =>
+        new Promise((done) => {
+          const layout = options?.overlayOptions;
+          assert.ok(layout && typeof layout !== "function");
+          assert.equal(layout.row, row);
+          assert.equal(layout.col, 3);
+          assert.equal(layout.maxHeight, height);
+          const component = mountComponent(factory, done);
+          for (let i = 0; i < locations.length; i++) {
+            const rendered = component.render(64);
+            assert.equal(rendered.length, height);
+            assert.match(
+              rendered.join("\n"),
+              new RegExp("> .*target" + i + "\\.ts:"),
+            );
+            if (i < locations.length - 1) component.handleInput("j");
+          }
+          component.handleInput("\r");
+        }),
+    );
+    const controller = createNativeTranscriptController(f);
+    await controller.invoke("references", f.snapshot);
+    assert.equal(f.seen.opened[0].uri, locations[7].uri);
+    assert.deepEqual(f.seen.notifications, []);
+    controller.dispose();
+  });
+}
+
 for (const width of [64, 32]) {
   test(`picker decodes relative paths and retains filename/position at width ${width}`, async () => {
     const { createNativeTranscriptController } = await native();

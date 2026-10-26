@@ -102,7 +102,6 @@ export async function showInlineHover({
             ...geometry,
             anchor,
             terminal,
-            placement: "below",
             tooltip: { width, height: Math.max(1, lines.length) },
           });
           top = Math.min(top, Math.max(0, lines.length - options.maxHeight));
