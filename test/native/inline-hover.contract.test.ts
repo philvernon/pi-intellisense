@@ -396,7 +396,7 @@ test("hover paints every padded row with Pi's background token and refreshes on 
     lines.every((line) => visibleWidth(line) === Number(hover.layout().width)),
   );
   assert.ok(
-    colors.length > 0 && colors.every((color) => color === "userMessageBg"),
+    colors.length > 0 && colors.every((color) => color === "customMessageBg"),
   );
   for (const line of lines) {
     for (const match of line.matchAll(/\x1b\[(?:0|49)?m/gu)) {

@@ -112,7 +112,7 @@ export async function showInlineHover({
           render(width: number) {
             const { maxHeight } = getOptions();
             const padding = width > 2 ? " " : "";
-            const background = theme.getBgAnsi("userMessageBg");
+            const background = theme.getBgAnsi("customMessageBg");
             return lines.slice(top, top + maxHeight).map((line) => {
               const padded = truncateToWidth(
                 padding + line + padding,
@@ -122,7 +122,7 @@ export async function showInlineHover({
               );
               // Syntax highlighting and wrapping can reset the panel background.
               return theme.bg(
-                "userMessageBg",
+                "customMessageBg",
                 padded.replace(/\x1b\[(?:0|49)?m/gu, `$&${background}`),
               );
             });

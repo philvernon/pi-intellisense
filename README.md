@@ -35,7 +35,7 @@ This is a source-loaded Pi package: `package.json` points to `src/index.ts`, wit
 4. `K` opens inline type/documentation hover. `Esc` closes only the popup; `Tab` closes it and returns to the prompt.
 5. `gd` opens a verified destination in Neovim. Multiple matches require the inline picker.
 
-Hover uses a borderless panel with Pi's `userMessageBg` theme color, wraps to available space and scrolls with `j`/`k` or arrow keys only when content overflows. Picker labels show decoded, workspace-relative paths with line and column; long paths are shortened without changing navigation targets.
+Hover uses a borderless panel with Pi's `customMessageBg` theme color, wraps to available space and scrolls with `j`/`k` or arrow keys only when content overflows. Picker labels show decoded, workspace-relative paths with line and column; long paths are shortened without changing navigation targets.
 
 `gr` references, `gD` declaration, `gi` implementation and `gy` type definition use the same location flow. Item-mode `K`, motions, selection and yanks remain owned by `pi-tab-focus`.
 
