@@ -48,6 +48,36 @@ test("NT-02: popup flips to visible side if symbol is near the right/bottom edge
   assert.ok(options.row + options.maxHeight <= 38);
 });
 
+test("hover placement prefers the row below the symbol and stays within the right edge", async () => {
+  const { placeHoverOverlay } = await projection();
+  const options = placeHoverOverlay({
+    anchor: { row: 16, col: 115 },
+    terminal,
+    tooltip: { width: 54, height: 14 },
+    protectedRows: { top: 2, bottom: 4 },
+    placement: "below",
+  });
+  assert.equal(options.row, 17);
+  assert.equal(options.col, 66);
+  assert.equal(options.maxHeight, 14);
+});
+
+test("hover placement flips above near the bottom and bounds tall content without covering the symbol", async () => {
+  const { placeHoverOverlay } = await projection();
+  for (const height of [12, 100]) {
+    const options = placeHoverOverlay({
+      anchor: { row: 35, col: 20 },
+      terminal,
+      tooltip: { width: 54, height },
+      protectedRows: { top: 2, bottom: 4 },
+      placement: "below",
+    });
+    assert.ok(options.row >= 2);
+    assert.equal(options.row + options.maxHeight, 35);
+    assert.equal(options.col, 20);
+  }
+});
+
 test("NT-02: K uses Pi overlay:true and NEVER replaces the transcript or opens /intel", async () => {
   const { showInlineHover } = await popup();
   const call: { options?: CustomOptions; component?: TestComponent } = {};
@@ -244,6 +274,8 @@ test("hover fits a one-line fenced hint without chrome or scrolling", async () =
   );
   assert.equal(hover.layout().width, visibleWidth(signature) + 2);
   assert.equal(hover.layout().maxHeight, 1);
+  assert.equal(hover.layout().row, 3);
+  assert.equal(hover.layout().col, 3);
   assert.doesNotMatch(before.join("\n"), /LSP hover|Esc close|╭|╮|```/);
   hover.component.handleInput("j");
   assert.deepEqual(hover.text(), before);
@@ -281,20 +313,21 @@ test("hover scrolls only overflow and stops on the last full viewport", async ()
   const hover = await hoverFixture("```text\n" + source.join("\n") + "\n```", {
     terminal: { rows: 12, columns: 40 },
   });
-  assert.equal(hover.layout().maxHeight, 6);
+  assert.equal(hover.layout().row, 3);
+  assert.equal(hover.layout().maxHeight, 4);
   assert.deepEqual(
     hover.text().map((line) => line.trim()),
-    source.slice(0, 6),
+    source.slice(0, 4),
   );
   for (let i = 0; i < 100; i++) hover.component.handleInput("j");
   assert.deepEqual(
     hover.text().map((line) => line.trim()),
-    source.slice(-6),
+    source.slice(-4),
   );
   for (let i = 0; i < 100; i++) hover.component.handleInput("k");
   assert.deepEqual(
     hover.text().map((line) => line.trim()),
-    source.slice(0, 6),
+    source.slice(0, 4),
   );
 });
 
