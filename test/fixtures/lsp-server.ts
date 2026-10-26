@@ -1,7 +1,18 @@
 const workspaceAliases = process.argv.includes("--workspace-aliases");
+const flatSymbols = process.argv.includes("--flat-symbols");
+const failedMethod = process.argv
+  .find((arg) => arg.startsWith("--fail-method="))
+  ?.split("=")[1];
+const failedFile = process.argv
+  .find((arg) => arg.startsWith("--fail-file="))
+  ?.split("=")[1];
 let buffer = Buffer.alloc(0),
   documentUri: string | undefined;
-function send(msg: { id: string | number; result: unknown }) {
+function send(
+  msg: { id: string | number } & (
+    { result: unknown } | { error: { code: number; message: string } }
+  ),
+) {
   const json = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...msg }));
   process.stdout.write("Content-Length: " + json.length + "\r\n\r\n");
   process.stdout.write(json);
@@ -38,6 +49,20 @@ process.stdin.on("data", (chunk) => {
       });
     else if (msg.method === "textDocument/didOpen")
       documentUri = msg.params.textDocument.uri;
+    else if (
+      msg.method === failedMethod &&
+      (!failedFile ||
+        new URL(msg.params.textDocument.uri).pathname.endsWith(
+          "/" + failedFile,
+        ))
+    )
+      send({
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: "simulated " + msg.method + " failure",
+        },
+      });
     else if (msg.method === "workspace/symbol")
       send({
         id: msg.id,
@@ -75,20 +100,34 @@ process.stdin.on("data", (chunk) => {
     else if (msg.method === "textDocument/documentSymbol")
       send({
         id: msg.id,
-        result: [
-          {
-            name: "state",
-            kind: 13,
-            range: {
-              start: { line: 0, character: 0 },
-              end: { line: 1, character: 19 },
-            },
-            selectionRange: {
-              start: { line: 0, character: 13 },
-              end: { line: 0, character: 18 },
-            },
-          },
-        ],
+        result: flatSymbols
+          ? [
+              {
+                name: "state",
+                kind: 13,
+                location: {
+                  uri: msg.params.textDocument.uri,
+                  range: {
+                    start: { line: 0, character: 13 },
+                    end: { line: 0, character: 18 },
+                  },
+                },
+              },
+            ]
+          : [
+              {
+                name: "state",
+                kind: 13,
+                range: {
+                  start: { line: 0, character: 0 },
+                  end: { line: 1, character: 19 },
+                },
+                selectionRange: {
+                  start: { line: 0, character: 13 },
+                  end: { line: 0, character: 18 },
+                },
+              },
+            ],
       });
     else if (msg.method === "textDocument/hover")
       send({

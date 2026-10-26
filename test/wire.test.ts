@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { getEventListeners } from "node:events";
 
 test("wire: binary MessagePack handles nested Neovim request and UTF-8 paths", () => {
   const message = [
@@ -111,3 +112,32 @@ test("wire: speaks real Neovim Msgpack-RPC packet format using an isolated Unix 
     await unlink(socket).catch(() => {});
   }
 });
+
+for (const reason of ["exit", "close"] as const) {
+  test(
+    `wire: ${reason} removes abort listeners from failed requests`,
+    { timeout: 5000 },
+    async (t) => {
+      const transport = createStdioLspTransport({
+        command: process.execPath,
+        args: [
+          "-e",
+          reason === "exit"
+            ? "process.stdin.once('data',()=>process.exit(0));process.stdin.resume();"
+            : "process.stdin.resume();",
+        ],
+        timeoutMs: 2000,
+      });
+      t.after(() => transport.close?.());
+      const controller = new AbortController();
+      const pending = assert.rejects(
+        transport.request("initialize", {}, { signal: controller.signal }),
+        reason === "exit" ? /Language server exited/ : /transport closed/,
+      );
+      assert.equal(getEventListeners(controller.signal, "abort").length, 1);
+      if (reason === "close") await transport.close?.();
+      await pending;
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+    },
+  );
+}

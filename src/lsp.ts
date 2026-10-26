@@ -33,7 +33,10 @@ export function createLspSession({
   let initialized = false;
   let disposed = false;
   let capabilities: LspCapabilities = {};
-  const docs = new Map<string, { text: string; version: number }>();
+  const docs = new Map<
+    string,
+    { text?: string; version: number; pending: Promise<void> }
+  >();
 
   function requireReady(): void {
     if (!initialized || disposed) {
@@ -67,12 +70,10 @@ export function createLspSession({
           hover: { contentFormat: ["markdown", "plaintext"] },
           definition: { linkSupport: true },
           references: {},
-          completion: { completionItem: { snippetSupport: false } },
           declaration: { linkSupport: true },
           implementation: { linkSupport: true },
           typeDefinition: { linkSupport: true },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-          signatureHelp: {},
         },
       },
     };
@@ -106,28 +107,48 @@ export function createLspSession({
   async function open({
     uri,
     text,
+    languageId: documentLanguageId = languageId,
     version = 1,
   }: {
     uri: string;
     text: string;
+    languageId?: string;
     version?: number;
   }): Promise<void> {
     requireReady();
-    const current = docs.get(uri);
-    if (current && current.text === text) return;
-    if (current) {
-      const next = Math.max(version, current.version + 1);
-      await transport.notify("textDocument/didChange", {
-        textDocument: { uri, version: next },
-        contentChanges: [{ text }],
-      });
-      docs.set(uri, { text, version: next });
-    } else {
-      await transport.notify("textDocument/didOpen", {
-        textDocument: { uri, languageId, version, text },
-      });
-      docs.set(uri, { text, version });
+    let current = docs.get(uri);
+    if (!current) {
+      current = { version: 0, pending: Promise.resolve() };
+      docs.set(uri, current);
     }
+    const document = current;
+    const transition = document.pending.then(async () => {
+      requireReady();
+      if (document.text === text) return;
+      const next =
+        document.text === undefined
+          ? version
+          : Math.max(version, document.version + 1);
+      if (document.text !== undefined) {
+        await transport.notify("textDocument/didChange", {
+          textDocument: { uri, version: next },
+          contentChanges: [{ text }],
+        });
+      } else {
+        await transport.notify("textDocument/didOpen", {
+          textDocument: {
+            uri,
+            languageId: documentLanguageId,
+            version: next,
+            text,
+          },
+        });
+      }
+      document.text = text;
+      document.version = next;
+    });
+    document.pending = transition.catch(() => {});
+    await transition;
   }
 
   function request(
@@ -138,7 +159,7 @@ export function createLspSession({
     requireReady();
     if (!capabilities[capability])
       throw new Error("Unsupported LSP capability: " + capability);
-    if (!docs.has(uri))
+    if (docs.get(uri)?.text === undefined)
       throw new Error("LSP document must be opened before requesting");
     const params: {
       textDocument: { uri: string };
@@ -157,8 +178,6 @@ export function createLspSession({
     implementation: ["textDocument/implementation", "implementationProvider"],
     typeDefinition: ["textDocument/typeDefinition", "typeDefinitionProvider"],
     references: ["textDocument/references", "referencesProvider"],
-    completion: ["textDocument/completion", "completionProvider"],
-    signatureHelp: ["textDocument/signatureHelp", "signatureHelpProvider"],
     documentSymbols: ["textDocument/documentSymbol", "documentSymbolProvider"],
   } as const satisfies Record<LspOperation, readonly [string, string]>;
 
@@ -206,7 +225,9 @@ export function createLspSession({
       disposed = true;
       try {
         if (!initialized) return;
-        for (const uri of docs.keys()) {
+        await Promise.all([...docs.values()].map((doc) => doc.pending));
+        for (const [uri, doc] of docs) {
+          if (doc.text === undefined) continue;
           await transport
             .notify("textDocument/didClose", { textDocument: { uri } })
             .catch(() => {});
@@ -243,8 +264,6 @@ export function createLspSession({
     implementation: (args) => client.query({ ...args, kind: "implementation" }),
     typeDefinition: (args) => client.query({ ...args, kind: "typeDefinition" }),
     references: (args) => client.query({ ...args, kind: "references" }),
-    completion: (args) => client.query({ ...args, kind: "completion" }),
-    signatureHelp: (args) => client.query({ ...args, kind: "signatureHelp" }),
     documentSymbols: (args) =>
       client.query({ ...args, kind: "documentSymbols" }),
   };

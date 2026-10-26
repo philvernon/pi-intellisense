@@ -30,8 +30,6 @@ export type LspOperation =
   | "implementation"
   | "typeDefinition"
   | "references"
-  | "completion"
-  | "signatureHelp"
   | "documentSymbols";
 
 export interface LspDocumentRequest {
@@ -86,33 +84,22 @@ export interface LspHover {
   range?: LspRange;
 }
 
-export interface CompletionItem {
-  label: string;
-  kind?: number;
-  detail?: string;
-  documentation?: string | MarkupContent;
-  insertText?: string;
-  [key: string]: unknown;
+export interface SymbolInformation {
+  name: string;
+  kind: number;
+  tags?: number[];
+  deprecated?: boolean;
+  location: LspLocation;
+  containerName?: string;
 }
 
-export interface CompletionList {
-  isIncomplete: boolean;
-  items: CompletionItem[];
-  [key: string]: unknown;
-}
-
-export interface SignatureHelp {
-  signatures: {
-    label: string;
-    documentation?: string | MarkupContent;
-    parameters?: {
-      label: string | [number, number];
-      documentation?: string | MarkupContent;
-    }[];
-    activeParameter?: number;
-  }[];
-  activeSignature?: number;
-  activeParameter?: number;
+export interface NormalizedDocumentSymbol extends Omit<
+  DocumentSymbol,
+  "selectionRange" | "children"
+> {
+  selectionRange?: LspRange;
+  children?: NormalizedDocumentSymbol[];
+  containerName?: string;
 }
 
 export type DefinitionResult =
@@ -125,9 +112,7 @@ export interface LspResultMap {
   implementation: DefinitionResult;
   typeDefinition: DefinitionResult;
   references: LspLocation[] | null;
-  completion: CompletionItem[] | CompletionList | null;
-  signatureHelp: SignatureHelp | null;
-  documentSymbols: DocumentSymbol[] | WorkspaceSymbol[] | null;
+  documentSymbols: DocumentSymbol[] | SymbolInformation[] | null;
 }
 
 export interface LspCapabilities {
@@ -162,6 +147,7 @@ export interface LspSession extends LspDocumentMethods {
   open(document: {
     uri: string;
     text: string;
+    languageId?: string;
     version?: number;
   }): Promise<void>;
   workspaceSymbols(

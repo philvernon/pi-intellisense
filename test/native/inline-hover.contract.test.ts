@@ -12,44 +12,7 @@ import {
 const projection = () => import("../../src/native/overlay-geometry.ts");
 const popup = () => import("../../src/native/inline-hover.ts");
 
-const viewport = {
-  scrollTop: 40,
-  top: 3,
-  left: 2,
-  height: 20,
-  width: 90,
-};
 const terminal = { rows: 42, cols: 120 };
-
-test("NT-02: transcript absolute row/column project into terminal viewport coordinates", async () => {
-  const { projectTranscriptCursor } = await projection();
-  assert.deepEqual(
-    projectTranscriptCursor({
-      cursor: { row: 53, col: 18 },
-      viewport,
-      terminal,
-    }),
-    { row: 16, col: 20 },
-  );
-  assert.equal(
-    projectTranscriptCursor({
-      cursor: { row: 60, col: 18 },
-      viewport,
-      terminal,
-    }),
-    null,
-    "offscreen transcript symbol is not hoverable",
-  );
-  assert.equal(
-    projectTranscriptCursor({
-      cursor: { row: 53, col: 95 },
-      viewport,
-      terminal,
-    }),
-    null,
-    "offscreen columns cannot get phantom popups",
-  );
-});
 
 test("NT-02: popup is adjacent to symbol, within edges and outside fixed prompt/status rows", async () => {
   const { placeHoverOverlay } = await projection();
@@ -164,27 +127,6 @@ test("NT-03: Esc dismisses only tooltip; same transcript cursor and yank state s
   );
 });
 
-test("NT-07: hidden/reflowed anchor cannot leave an orphan positioned tooltip", async () => {
-  const { projectTranscriptCursor } = await projection();
-  assert.equal(
-    projectTranscriptCursor({
-      cursor: { row: 53, col: 18 },
-      viewport: { ...viewport, scrollTop: 54 },
-      terminal,
-    }),
-    null,
-    "after scroll past the symbol the tooltip anchor is invalid",
-  );
-  assert.equal(
-    projectTranscriptCursor({
-      cursor: { row: 53, col: 18 },
-      viewport: { ...viewport, width: 10 },
-      terminal,
-    }),
-    null,
-    "terminal rewrap invalidates the old display coordinate",
-  );
-});
 test("Focus-P0: Tab on a capturing hover closes it and returns to the Pi editor", async () => {
   const { showInlineHover } = await popup();
   let component!: TestComponent;

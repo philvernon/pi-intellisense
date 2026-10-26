@@ -21,7 +21,7 @@ import { normalizeLocations } from "../../src/lsp/normalize.ts";
 const execFile = promisify(callback);
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
-test("real TypeScript LSP resolves annotated transcript code and unsaved generated code", async () => {
+test("real TypeScript LSP resolves annotated transcript code", async () => {
   const runtime = createLspManager({ cwd: root, config: { timeoutMs: 15000 } });
   try {
     const relative = "test/fixtures/source.ts",
@@ -59,20 +59,6 @@ test("real TypeScript LSP resolves annotated transcript code and unsaved generat
       position: source.position,
     });
     assert.match(JSON.stringify(definition), /source\.ts/);
-    const virtualCode =
-      "function double(value: number) { return value * 2; }\ndouble(2);\n";
-    const virtualFile = path.join(
-      root,
-      ".pi-intellisense-virtual",
-      "runtime-smoke.ts",
-    );
-    const virtual = await runtime.get(virtualFile, virtualCode);
-    const result = await virtual.query({
-      kind: "hover",
-      uri: new URL("file://" + virtualFile).href,
-      position: { line: 1, character: 1 },
-    });
-    assert.match(JSON.stringify(result), /double.*number/);
   } finally {
     await runtime.close();
   }

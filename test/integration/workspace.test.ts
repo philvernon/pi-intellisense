@@ -114,7 +114,7 @@ for (const distinct of [false, true]) {
         process.env.PI_CODING_AGENT_DIR = agent;
         await writeFile(
           path.join(agent, "pi-intellisense.json"),
-          JSON.stringify({ provider: "standalone", timeoutMs: 15000 }),
+          JSON.stringify({ timeoutMs: 15000 }),
         );
         await mkdir(path.join(cwd, "node_modules"));
         await symlink(

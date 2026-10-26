@@ -17,7 +17,7 @@ import {
   type NavigationLocation,
 } from "./native/native-controller.ts";
 import { normalizeDocumentSymbols } from "./lsp/normalize.ts";
-import type { DocumentSymbol } from "./lsp/types.ts";
+import type { NormalizedDocumentSymbol } from "./lsp/types.ts";
 import {
   symbolAtLine,
   type SourceAnchor,
@@ -31,7 +31,6 @@ import {
 import { createNeovimNavigator } from "./neovim-launcher.ts";
 import { resolveTranscriptProvenance } from "./native/provenance-resolver.ts";
 import { stripAnsi } from "./positions.ts";
-import { createProvider } from "./providers/index.ts";
 
 const hashText = (text: string) =>
   createHash("sha256").update(text).digest("hex");
@@ -39,14 +38,11 @@ interface Configuration {
   timeoutMs: number;
   servers: Record<string, { command: string; args: string[] }>;
   nvimSocket: string;
-  provider: "standalone" | "pi-lens-mcp";
-  piLensServer?: string;
 }
 const DEFAULT_CONFIG: Configuration = {
   timeoutMs: 5000,
   servers: {},
   nvimSocket: "env:NVIM",
-  provider: "standalone",
 };
 
 function agentDirectory() {
@@ -86,12 +82,6 @@ async function configFromDisk(): Promise<Configuration> {
           : 5000,
       nvimSocket:
         typeof data.nvimSocket === "string" ? data.nvimSocket : "env:NVIM",
-      provider: data.provider === "pi-lens-mcp" ? "pi-lens-mcp" : "standalone",
-      piLensServer:
-        typeof data.piLensServer === "string" &&
-        path.isAbsolute(data.piLensServer)
-          ? data.piLensServer
-          : undefined,
     };
   } catch {
     return DEFAULT_CONFIG;
@@ -132,41 +122,18 @@ export default function piIntelliSense(pi: ExtensionAPI) {
       timeoutMs: config.timeoutMs,
     });
     let manager: ReturnType<typeof createLspManager> | undefined;
-    let provider: ReturnType<typeof createProvider> | undefined;
     let transcriptRevision = "";
     let disposed = false;
     const runtime = () => (manager ??= createLspManager({ cwd: root, config }));
     const query = async (request: SourceRequest) => {
-      if (!provider)
-        provider = createProvider({
-          kind: config.provider,
-          cwd: root,
-          piLensServer:
-            config.piLensServer ??
-            path.join(
-              agentDirectory(),
-              "npm",
-              "node_modules",
-              "pi-lens",
-              "dist",
-              "mcp",
-              "server.js",
-            ),
-          standaloneQuery: async (q) => {
-            const file = fileURLToPath(q.uri);
-            if (!within(root, file))
-              throw new Error("Source outside workspace");
-            const text = await fs.readFile(file, "utf8");
-            if (hashText(text) !== q.source?.fileHash)
-              throw new Error(
-                "Source changed since mapping; retry hover/navigation",
-              );
-            return (
-              await runtime().get(file, text, { signal: q.signal })
-            ).query(q);
-          },
-        });
-      return provider.query(request);
+      const file = fileURLToPath(request.uri);
+      if (!within(root, file)) throw new Error("Source outside workspace");
+      const text = await fs.readFile(file, "utf8");
+      if (hashText(text) !== request.source.fileHash)
+        throw new Error("Source changed since mapping; retry hover/navigation");
+      return (
+        await runtime().get(file, text, { signal: request.signal })
+      ).query(request);
     };
     const controller = createNativeTranscriptController({
       ui: ctx.ui,
@@ -199,15 +166,35 @@ export default function piIntelliSense(pi: ExtensionAPI) {
           languageId: source.languageId,
           signal,
         });
-        const matches = new Map<string, SourceAnchor & NavigationLocation>(),
-          files = new Map<
-            string,
-            Promise<{ text: string; fileHash: string }>
-          >(),
-          documents = new Map<string, Promise<DocumentSymbol[]>>();
+        const matches = new Map<string, SourceAnchor & NavigationLocation>();
+        const files = new Map<
+          string,
+          Promise<{ text: string; fileHash: string }>
+        >();
+        const documents = new Map<
+          string,
+          Promise<NormalizedDocumentSymbol[]>
+        >();
+        const readCandidate = async (location: unknown) => {
+          try {
+            const target = await validateFileLocation(location, { root });
+            let contents = files.get(target.path);
+            if (!contents) {
+              contents = fs
+                .readFile(target.path, "utf8")
+                .then((text) => ({ text, fileHash: hashText(text) }));
+              files.set(target.path, contents);
+            }
+            return { ...target, ...(await contents) };
+          } catch {
+            return null;
+          }
+        };
         const compare = (a: Position, b: Position) =>
           a.line - b.line || a.character - b.character;
-        const flatten = (symbols: DocumentSymbol[]): DocumentSymbol[] =>
+        const flatten = (
+          symbols: NormalizedDocumentSymbol[],
+        ): NormalizedDocumentSymbol[] =>
           symbols.flatMap((symbol) => [
             symbol,
             ...flatten(symbol.children ?? []),
@@ -217,110 +204,97 @@ export default function piIntelliSense(pi: ExtensionAPI) {
           if (symbol.name !== source.token || !symbol.location?.range?.start)
             continue;
           const { uri, range } = symbol.location;
-          try {
-            const target = await validateFileLocation({ uri, range }, { root });
-            if (!files.has(uri))
-              files.set(
+          const file = await readCandidate({ uri, range });
+          if (!file) continue;
+          const client = await runtime().get(file.path, file.text, {
+            uri,
+            signal,
+          });
+          let position = range.start;
+          const lines = file.text.split(/\r?\n/u);
+          const line = lines[position.line] ?? "";
+          if (!line.slice(position.character).startsWith(source.token)) {
+            if (!documents.has(uri))
+              documents.set(
                 uri,
-                fs
-                  .readFile(target.path, "utf8")
-                  .then((text) => ({ text, fileHash: hashText(text) })),
+                (async () => {
+                  return client.capabilities.documentSymbolProvider
+                    ? flatten(
+                        normalizeDocumentSymbols(
+                          await client.query({
+                            kind: "documentSymbols",
+                            uri,
+                            signal,
+                          }),
+                          uri,
+                        ),
+                      )
+                    : [];
+                })(),
               );
-            const file = (await files.get(uri))!;
-            const client = await runtime().get(target.path, file.text, {
-              uri,
-              signal,
-            });
-            let position = range.start;
-            const line = file.text.split(/\r?\n/u)[position.line] ?? "";
-            if (!line.slice(position.character).startsWith(source.token)) {
-              if (!documents.has(uri))
-                documents.set(
-                  uri,
-                  (async () => {
-                    return client.capabilities.documentSymbolProvider
-                      ? flatten(
-                          normalizeDocumentSymbols(
-                            await client.query({
-                              kind: "documentSymbols",
-                              uri,
-                              signal,
-                            }),
-                          ),
-                        )
-                      : [];
-                  })(),
-                );
-              const selections = (await documents.get(uri))!.filter(
+            const selections = (await documents.get(uri))!
+              .filter((symbol) => symbol.name === source.token)
+              .map((symbol) => ({
+                range: symbol.range,
+                position: symbol.selectionRange?.start ?? symbol.range.start,
+              }))
+              .filter(
                 (symbol) =>
-                  symbol.name === source.token &&
-                  symbol.selectionRange &&
-                  compare(symbol.selectionRange.start, range.start) >= 0 &&
-                  compare(symbol.selectionRange.start, range.end) < 0,
+                  compare(symbol.position, range.start) >= 0 &&
+                  compare(symbol.position, range.end) < 0 &&
+                  (lines[symbol.position.line] ?? "")
+                    .slice(symbol.position.character)
+                    .startsWith(source.token),
               );
-              const selected =
-                selections.find(
-                  (symbol) => compare(symbol.range.start, range.start) === 0,
-                ) ?? (selections.length === 1 ? selections[0] : null);
-              if (selected) position = selected.selectionRange.start;
-            }
-            const definitions = client.capabilities.definitionProvider
-              ? normalizeLocations(
-                  await client.query({
-                    kind: "definition",
-                    uri,
-                    position,
-                    signal,
-                  }),
-                )
-              : [];
-            const destinations = definitions.length
-              ? definitions
-              : [{ uri, selectionRange: { start: position } }];
-            for (const destination of destinations) {
-              if (signal.aborted) return [];
-              const definition = await validateFileLocation(destination, {
-                root,
-              });
-              const definitionUri = pathToFileURL(definition.path).href;
-              const key = JSON.stringify([
-                definitionUri,
-                definition.line,
-                definition.character,
-              ]);
-              if (matches.has(key)) continue;
-              if (!files.has(definitionUri)) {
-                files.set(
-                  definitionUri,
-                  fs
-                    .readFile(definition.path, "utf8")
-                    .then((text) => ({ text, fileHash: hashText(text) })),
-                );
-              }
-              const contents = (await files.get(definitionUri))!;
-              matches.set(key, {
-                kind: "verified-file",
-                origin: "workspace-symbol",
-                uri: definitionUri,
-                fileHash: contents.fileHash,
-                token: source.token,
-                position: {
-                  line: definition.line,
-                  character: definition.character,
-                },
+            const selected =
+              selections.find(
+                (symbol) => compare(symbol.range.start, range.start) === 0,
+              ) ?? (selections.length === 1 ? selections[0] : null);
+            if (selected) position = selected.position;
+          }
+          const definitions = client.capabilities.definitionProvider
+            ? normalizeLocations(
+                await client.query({
+                  kind: "definition",
+                  uri,
+                  position,
+                  signal,
+                }),
+              )
+            : [];
+          const destinations = definitions.length
+            ? definitions
+            : [{ uri, selectionRange: { start: position } }];
+          for (const destination of destinations) {
+            if (signal.aborted) return [];
+            const definition = await readCandidate(destination);
+            if (!definition) continue;
+            const definitionUri = pathToFileURL(definition.path).href;
+            const key = JSON.stringify([
+              definitionUri,
+              definition.line,
+              definition.character,
+            ]);
+            if (matches.has(key)) continue;
+            matches.set(key, {
+              kind: "verified-file",
+              origin: "workspace-symbol",
+              uri: definitionUri,
+              fileHash: definition.fileHash,
+              token: source.token,
+              position: {
                 line: definition.line,
                 character: definition.character,
-              });
-            }
-          } catch {
-            continue;
+              },
+              line: definition.line,
+              character: definition.character,
+            });
           }
         }
         return [...matches.values()];
       },
       lsp: { query },
       validateSource: async (source) => {
-        if (source.kind === "virtual-document") return true;
         if (!source.fileHash || !source.uri?.startsWith("file://"))
           return false;
         const file = fileURLToPath(source.uri);
@@ -364,7 +338,6 @@ export default function piIntelliSense(pi: ExtensionAPI) {
       disposed = true;
       registration.dispose();
       controller.dispose();
-      await provider?.close?.();
       await manager?.close();
     };
   });

@@ -61,28 +61,6 @@ export function stripAnsi(input: string): string {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, "");
 }
 
-export function visualToLspCharacter(
-  line: string,
-  displayCol: number,
-  { tabSize = 4 }: DisplayColumnOptions = {},
-): number | undefined {
-  if (!Number.isInteger(displayCol) || displayCol < 0) return undefined;
-  const source = stripAnsi(line);
-  let col = 0;
-  let utf16 = 0;
-  for (const { segment } of segmenter.segment(source)) {
-    if (displayCol <= col) return utf16;
-    const width =
-      segment === "\t" ? tabSize - (col % tabSize) : visibleWidth(segment);
-    if (displayCol < col + width) return utf16;
-    col += width;
-    utf16 += segment.length;
-  }
-  return displayCol <= col ? utf16 : undefined;
-}
-
-export const displayColumnToUtf16 = visualToLspCharacter;
-
 /** Terminal display-cell width, used to map prefixes in styled transcript lines. */
 export function terminalCells(
   text: string,

@@ -64,7 +64,6 @@ Optional configuration is `~/.pi/agent/pi-intellisense.json`, or under `PI_CODIN
 ```json
 {
   "timeoutMs": 5000,
-  "provider": "standalone",
   "nvimSocket": "env:NVIM",
   "servers": {
     "typescript": {
@@ -81,7 +80,7 @@ A configured broken socket reports an error, never an unexpected fallback editor
 
 Paths are structured arguments/RPC data, never executable shell or Ex text. Sources and destinations must resolve to existing files inside the workspace. Source hashes and request currency are rechecked through startup and immediately before navigation. LSP text is sanitized, and cancelled/stale results cannot reopen UI.
 
-The experimental `pi-lens-mcp` provider starts a separate MCP process; it does not share Pi's loaded pi-lens pool or support virtual snippets. Standalone stdio LSP is the default. No `pi-tools`, Sidekick or Neovim configuration changes are made. Full Sidekick embedding and pi-vim outer-mode interactions remain unverified.
+Language servers are queried directly over stdio. No `pi-tools`, Sidekick or Neovim configuration changes are made. Full Sidekick embedding and pi-vim outer-mode interactions remain unverified.
 
 ## Development and verification
 
@@ -105,6 +104,6 @@ Integration needs `pi`, `tmux`, `nvim` and `typescript-language-server` on `PATH
 
 Passing tests verify the exercised fixtures, not universal transcript semantics or every host/server combination.
 
-Coverage includes provenance/path safety, Unicode coordinates, bridge validation and lifecycle, real entry registration, inline hover/picker ownership, cancellation/reflow/source races, lazy editor startup/recovery, provider transports and wire framing. Real integration checks imported-method context recovery, cold workspace lookup with explicit/inferred language, lazy Neovim reuse and actual buffer/cursor positions, plus real Pi `K`/`gd` for annotated fences, reads, read-backed quotes and workspace-only code. Real Pi `gr` is checked separately to open a usage rather than the declaration, reusing the editor opened by `gd`.
+Coverage includes provenance/path safety, Unicode coordinates, bridge validation and lifecycle, real entry registration, inline hover/picker ownership, cancellation/reflow/source races, lazy editor startup/recovery, stdio transport and wire framing. Real integration checks imported-method context recovery, cold workspace lookup with explicit/inferred language, lazy Neovim reuse and actual buffer/cursor positions, plus real Pi `K`/`gd` for annotated fences, reads, read-backed quotes and workspace-only code. Real Pi `gr` is checked separately to open a usage rather than the declaration, reusing the editor opened by `gd`.
 
 The bridge remains the sole input owner. Its contract and safety/lifecycle requirements are in [SPEC.md](SPEC.md), the single maintained implementation specification. The retired standalone `/intel` viewer, wrapper binary and duplicate controllers are not product paths.

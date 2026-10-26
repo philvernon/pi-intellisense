@@ -19,11 +19,11 @@ Exact positions are optional fast paths:
 
 1. Native `read` provenance uses the exact persisted `toolCallId`, normalized path and actual offset/limit. Raw output must match disk. Reconstruct limit notices only from the actual arguments; never strip number-like raw source as line labels or borrow unrelated tool results.
 2. Unannotated quotes may recover a unique contiguous location from successful read history, allowing common leading indentation changes while preserving UTF-16 columns. Failed/truncated reads, stale candidates and ambiguous matches cannot assert file identity.
-3. Optional fence metadata follows `ts source="src/client.ts" lines="42-43"`: language token, JSON-quoted path, quoted inclusive 1-based range. Validate the complete range against current source, normalizing only CRLF. Malformed, stale, missing or unsafe explicit bindings fail locally rather than falling back to virtual context.
+3. Optional fence metadata follows `ts source="src/client.ts" lines="42-43"`: language token, JSON-quoted path, quoted inclusive 1-based range. Validate the complete range against current source, normalizing only CRLF. Malformed, stale, missing or unsafe explicit bindings fail locally rather than silently changing source context.
 
 Original assistant Markdown is required for fence identity. Hide annotation attributes only through `registerMarkdownTransformer`; retain session text. Prose filenames are not authority. Whole displayed regions must match contiguously and unambiguously, within actual fence boundaries and original block order. Repeated source lines use their displayed row. Map Pi's three-space tabs, ANSI styling, wide glyphs and combining marks to original UTF-16 positions. Unsupported wrapping, truncation, oversized regions (>2,000 lines) and diffs cannot claim exact file positions, though visible names can use workspace lookup.
 
-`before_agent_start` requests ordinary language fences, not annotations or prior reads. Low-level virtual-document support remains tested, but is not the default product fallback for arbitrary transcript text.
+`before_agent_start` requests ordinary language fences, not annotations or prior reads. Unbound transcript identifiers become workspace-symbol queries, not synthetic documents.
 
 ## Bridge and request lifetime
 
@@ -47,7 +47,7 @@ Session replacement/shutdown unregisters handlers, cancels pending work, closes 
 
 ## Implementation and verification boundary
 
-Production entry is `src/index.ts`; provenance/mapping/controller live under `src/native/`, bridge under `src/bridge/`, and LSP/runtime/provider and Neovim adapters in their corresponding source modules. Local imports explicitly use `.ts`; Pi loads through `jiti`, Node executes erasable TypeScript directly, and strict `noEmit` checking includes tests. Use Node's built-in test runner only.
+Production entry is `src/index.ts`; provenance/mapping/controller live under `src/native/`, bridge under `src/bridge/`, and LSP/runtime and Neovim adapters in their corresponding source modules. Local imports explicitly use `.ts`; Pi loads through `jiti`, Node executes erasable TypeScript directly, and strict `noEmit` checking includes tests. Use Node's built-in test runner only.
 
 Acceptance gates:
 
@@ -56,4 +56,4 @@ Acceptance gates:
 - Deliberate integration runs use real TypeScript LSP, tmux and Neovim, verifying imported-method quote recovery, cold workspace lookup, editor reuse and exact buffer/cursor positions.
 - With `PI_TAB_FOCUS_SOURCE` pointing to the patched bridge, offline saved Pi sessions exercise actual `K`/`gd` for annotated fences, expanded reads, read-backed quotes and workspace-only code; `gr` opens a usage rather than the declaration and reuses the same editor. No model requests or user tmux/editor sessions are involved. Companion tests separately verify the real input owner.
 
-Setup, measured results and prerequisites are maintained in [README.md](README.md). The local bridge is not assumed published. Full Sidekick embedding, pi-vim outer modes, arbitrary renderer changes, lossless wrapped/diff provenance and all language servers remain outside the verified boundary. The experimental MCP provider is a separate process, not a shared Pi pool.
+Setup, prerequisites and verification commands are maintained in [README.md](README.md). The local bridge is not assumed published. Full Sidekick embedding, pi-vim outer modes, arbitrary renderer changes, lossless wrapped/diff provenance and all language servers remain outside the verified boundary.

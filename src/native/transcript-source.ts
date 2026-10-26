@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { stripAnsi, terminalCells, type Position } from "../positions.ts";
 export type { Position } from "../positions.ts";
 import type { Snapshot } from "../bridge/register.ts";
@@ -31,50 +30,38 @@ export function symbolAtLine(
 
 export interface SourceLine {
   text: string;
-  displayText?: string;
   sourceLine: number;
   sourceCharacterStart?: number;
 }
-export interface DisplayLine {
+interface DisplayLine {
   displayRow: number;
   displayColStart: number;
   text: string;
   sourceLine: number;
   sourceCharacterStart: number;
 }
-export interface VerifiedSource {
+interface VerifiedSource {
   kind: "verified-file";
   uri: string;
   fileHash: string;
   origin:
     "structured-read" | "annotated-fence" | "read-quote" | "workspace-symbol";
 }
-export interface VirtualSource {
-  kind: "virtual-document";
-  uri: string;
-  languageId: string;
-  text: string;
-  readOnly: boolean;
-  origin: "fence";
+export interface WorkspaceSymbolQuery {
+  kind: "workspace-symbol-query";
+  token: string;
+  languageId?: string;
 }
-export type SourceRegion = (VerifiedSource | VirtualSource) & {
-  lines: SourceLine[];
-  codeRegionId: string;
-  sourceText?: string;
-};
-export interface RenderedMetadata {
+export type SourceRegion = (
+  VerifiedSource | Omit<WorkspaceSymbolQuery, "token">
+) & { lines: SourceLine[] };
+export type RenderedRegion = SourceRegion & {
   displayLines: DisplayLine[];
   itemSemanticKey: string;
   transcriptRevision: string;
   layoutRevision: string;
-}
-export type RenderedRegion = SourceRegion & RenderedMetadata;
-export type ResolvedSymbol = RenderedRegion & {
-  position: Position;
-  token: string;
-  confidence: "verified" | "virtual";
 };
-export type SourceAnchor = (VerifiedSource | VirtualSource) & {
+export type SourceAnchor = VerifiedSource & {
   position: Position;
   token: string;
 };
@@ -110,7 +97,7 @@ export function mapRenderedRegion<T extends { lines: SourceLine[] }>(
     for (let offset = 0; offset < region.lines.length; offset++) {
       const row = region.lines[offset],
         display = rendered[start + offset];
-      const needle = expandedTabs(row.displayText ?? row.text).trimEnd();
+      const needle = expandedTabs(row.text).trimEnd();
       if (!needle) {
         if (display.trim()) break;
       }
@@ -122,13 +109,9 @@ export function mapRenderedRegion<T extends { lines: SourceLine[] }>(
       )
         break;
       if (display.slice(0, at).trim()) break;
-      const codeOffset = expandedTabs(row.displayText ?? row.text).indexOf(
-        expandedTabs(row.text),
-      );
-      if (codeOffset < 0) break;
       displayLines.push({
         displayRow: snapshot.renderedStartRow + start + offset,
-        displayColStart: terminalCells(display.slice(0, at)) + codeOffset,
+        displayColStart: terminalCells(display.slice(0, at)),
         text: row.text,
         sourceLine: row.sourceLine,
         sourceCharacterStart: row.sourceCharacterStart ?? 0,
@@ -148,15 +131,13 @@ export function mapRenderedRegion<T extends { lines: SourceLine[] }>(
   return matches;
 }
 
-export async function resolveTranscriptSymbol({
+export function resolveTranscriptSymbol({
   snapshot,
   regions,
-  source,
 }: {
   snapshot: Snapshot;
   regions: RenderedRegion[];
-  source: { readFile: (uri: string) => Promise<string> };
-}): Promise<ResolvedSymbol | null> {
+}): SourceAnchor | WorkspaceSymbolQuery | null {
   if (!snapshot?.visualCursor) return null;
   const cursor = snapshot.visualCursor;
   const matches = regions.flatMap((region) => {
@@ -180,24 +161,23 @@ export async function resolveTranscriptSymbol({
   });
   if (matches.length !== 1) return null;
   const { region, line, position } = matches[0];
-  if (region.kind === "verified-file") {
-    const contents = await source.readFile(region.uri).catch(() => null);
-    if (
-      typeof contents !== "string" ||
-      createHash("sha256").update(contents).digest("hex") !== region.fileHash
-    )
-      return null;
-  }
+  if (region.kind === "workspace-symbol-query")
+    return {
+      kind: region.kind,
+      token: position.token,
+      languageId: region.languageId,
+    };
   return {
-    ...region,
+    kind: region.kind,
+    uri: region.uri,
+    fileHash: region.fileHash,
+    origin: region.origin,
     position: { line: line.sourceLine, character: position.character },
     token: position.token,
-    confidence: region.kind === "verified-file" ? "verified" : "virtual",
   };
 }
 
 interface FenceBlock {
-  id: string;
   blockIndex: number;
   code: string;
   language: string;
@@ -249,7 +229,6 @@ export function mapRenderedFence(
       renderedStartRow: snapshot.renderedStartRow + fence.start + 1,
     },
     {
-      codeRegionId: block.id,
       lines: lines.map((text: string, sourceLine: number) => ({
         text,
         sourceLine,

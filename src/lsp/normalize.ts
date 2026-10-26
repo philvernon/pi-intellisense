@@ -1,6 +1,5 @@
 import { normalizeLocations as full } from "../locations.ts";
 import type {
-  CompletionItem,
   DocumentSymbol,
   LspCapabilities,
   LspHover,
@@ -10,8 +9,9 @@ import type {
   LspPosition,
   LspRange,
   LspResultMap,
+  NormalizedDocumentSymbol,
   ResolvedWorkspaceSymbol,
-  SignatureHelp,
+  SymbolInformation,
   WorkspaceSymbol,
 } from "./types.ts";
 
@@ -72,43 +72,25 @@ export function isLspRange(value: unknown): value is LspRange {
   );
 }
 
-export function normalizeDocumentSymbols(response: unknown): DocumentSymbol[] {
-  if (!Array.isArray(response)) return [];
-  const result: DocumentSymbol[] = [];
-  const values: unknown[] = response;
-  for (const value of values) {
-    if (
-      !isRecord(value) ||
-      typeof value.name !== "string" ||
-      typeof value.kind !== "number" ||
-      !Number.isInteger(value.kind) ||
-      !isLspRange(value.range) ||
-      !isLspRange(value.selectionRange) ||
-      comparePositions(value.range.start, value.selectionRange.start) > 0 ||
-      comparePositions(value.selectionRange.end, value.range.end) > 0
-    ) {
-      continue;
-    }
-    const symbol: DocumentSymbol = {
-      name: value.name,
-      kind: value.kind,
-      range: value.range,
-      selectionRange: value.selectionRange,
+export function normalizeDocumentSymbols(
+  response: LspResultMap["documentSymbols"],
+  uri?: string,
+): NormalizedDocumentSymbol[] {
+  return (response ?? []).flatMap<NormalizedDocumentSymbol>((symbol) => {
+    if (!("location" in symbol)) return [symbol];
+    if (uri !== undefined && symbol.location.uri !== uri) return [];
+    const normalized: NormalizedDocumentSymbol = {
+      name: symbol.name,
+      kind: symbol.kind,
+      range: symbol.location.range,
     };
-    if (typeof value.detail === "string") symbol.detail = value.detail;
-    if (typeof value.deprecated === "boolean")
-      symbol.deprecated = value.deprecated;
-    if (
-      Array.isArray(value.tags) &&
-      value.tags.every((tag: unknown) => typeof tag === "number")
-    ) {
-      symbol.tags = value.tags;
-    }
-    if (Array.isArray(value.children))
-      symbol.children = normalizeDocumentSymbols(value.children);
-    result.push(symbol);
-  }
-  return result;
+    if (symbol.tags !== undefined) normalized.tags = symbol.tags;
+    if (symbol.deprecated !== undefined)
+      normalized.deprecated = symbol.deprecated;
+    if (symbol.containerName !== undefined)
+      normalized.containerName = symbol.containerName;
+    return [normalized];
+  });
 }
 
 function isNumberArray(value: unknown): value is number[] {
@@ -141,8 +123,6 @@ export function isLspCapabilities(value: unknown): value is LspCapabilities {
     "implementationProvider",
     "typeDefinitionProvider",
     "referencesProvider",
-    "completionProvider",
-    "signatureHelpProvider",
     "documentSymbolProvider",
   ].every(
     (key) =>
@@ -231,6 +211,8 @@ function isDocumentSymbol(value: unknown): value is DocumentSymbol {
     Number.isInteger(value.kind) &&
     isLspRange(value.range) &&
     isLspRange(value.selectionRange) &&
+    comparePositions(value.range.start, value.selectionRange.start) <= 0 &&
+    comparePositions(value.selectionRange.end, value.range.end) <= 0 &&
     (value.detail === undefined || typeof value.detail === "string") &&
     (value.deprecated === undefined || typeof value.deprecated === "boolean") &&
     (value.tags === undefined || isNumberArray(value.tags)) &&
@@ -239,58 +221,17 @@ function isDocumentSymbol(value: unknown): value is DocumentSymbol {
   );
 }
 
-function isCompletionItem(value: unknown): value is CompletionItem {
+function isSymbolInformation(value: unknown): value is SymbolInformation {
   return (
     isRecord(value) &&
-    typeof value.label === "string" &&
-    (value.kind === undefined || typeof value.kind === "number") &&
-    (value.detail === undefined || typeof value.detail === "string") &&
-    (value.documentation === undefined ||
-      typeof value.documentation === "string" ||
-      isMarkupContent(value.documentation)) &&
-    (value.insertText === undefined || typeof value.insertText === "string")
-  );
-}
-
-function isSignatureHelp(value: unknown): value is SignatureHelp {
-  if (!isRecord(value) || !Array.isArray(value.signatures)) return false;
-  return (
-    (value.activeSignature === undefined ||
-      typeof value.activeSignature === "number") &&
-    (value.activeParameter === undefined ||
-      typeof value.activeParameter === "number") &&
-    value.signatures.every((signature: unknown) => {
-      if (!isRecord(signature) || typeof signature.label !== "string")
-        return false;
-      if (
-        signature.documentation !== undefined &&
-        typeof signature.documentation !== "string" &&
-        !isMarkupContent(signature.documentation)
-      )
-        return false;
-      if (
-        signature.activeParameter !== undefined &&
-        typeof signature.activeParameter !== "number"
-      )
-        return false;
-      if (signature.parameters === undefined) return true;
-      return (
-        Array.isArray(signature.parameters) &&
-        signature.parameters.every((parameter: unknown) => {
-          if (!isRecord(parameter)) return false;
-          const label = parameter.label;
-          return (
-            (typeof label === "string" ||
-              (Array.isArray(label) &&
-                label.length === 2 &&
-                label.every((part: unknown) => typeof part === "number"))) &&
-            (parameter.documentation === undefined ||
-              typeof parameter.documentation === "string" ||
-              isMarkupContent(parameter.documentation))
-          );
-        })
-      );
-    })
+    typeof value.name === "string" &&
+    typeof value.kind === "number" &&
+    Number.isInteger(value.kind) &&
+    isLocation(value.location) &&
+    (value.containerName === undefined ||
+      typeof value.containerName === "string") &&
+    (value.tags === undefined || isNumberArray(value.tags)) &&
+    (value.deprecated === undefined || typeof value.deprecated === "boolean")
   );
 }
 
@@ -313,20 +254,10 @@ export function isLspResult<Kind extends LspOperation>(
       );
     case "references":
       return Array.isArray(value) && value.every(isLocation);
-    case "completion":
-      return (
-        (Array.isArray(value) && value.every(isCompletionItem)) ||
-        (isRecord(value) &&
-          typeof value.isIncomplete === "boolean" &&
-          Array.isArray(value.items) &&
-          value.items.every(isCompletionItem))
-      );
-    case "signatureHelp":
-      return isSignatureHelp(value);
     case "documentSymbols":
       return (
         Array.isArray(value) &&
-        (value.every(isDocumentSymbol) || value.every(isWorkspaceSymbol))
+        (value.every(isDocumentSymbol) || value.every(isSymbolInformation))
       );
   }
   return false;

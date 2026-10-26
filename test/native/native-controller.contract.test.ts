@@ -395,56 +395,6 @@ test("committed editor navigation survives its own split reflow but not changed 
   controller.dispose();
 });
 
-test("isolated snippet hover explicitly identifies missing file context", async () => {
-  const { createNativeTranscriptController } = await native(),
-    f = fixture();
-  f.resolveSymbol = async () => ({
-    kind: "virtual-document",
-    uri: "file:///snippet.ts",
-    languageId: "typescript",
-    text: "calculateTotal()",
-    readOnly: true,
-    origin: "fence",
-    position: f.anchor.position,
-    token: f.anchor.token,
-  });
-  let rendered = "";
-  f.ui.custom = customUI(async (factory) => {
-    const component = mountComponent(factory);
-    rendered = component.render(80).join("\n");
-    return null;
-  });
-  const controller = createNativeTranscriptController(f);
-  await controller.invoke("hover", f.snapshot);
-  assert.match(rendered, /Snippet only \(no matching source file\)/);
-  assert.match(rendered, /calculateTotal/);
-  controller.dispose();
-});
-
-test("a missing snippet definition explains the missing source context", async () => {
-  const { createNativeTranscriptController } = await native(),
-    f = fixture();
-  f.resolveSymbol = async () => ({
-    kind: "virtual-document",
-    uri: "file:///snippet.ts",
-    languageId: "typescript",
-    text: "calculateTotal()",
-    readOnly: true,
-    origin: "fence",
-    position: f.anchor.position,
-    token: f.anchor.token,
-  });
-  f.lsp.query = async () => null;
-  const controller = createNativeTranscriptController(f);
-  await controller.invoke("definition", f.snapshot);
-  assert.match(
-    f.seen.notifications[0],
-    /snippet has no matching source file; read the source first/,
-  );
-  assert.deepEqual(f.seen.opened, []);
-  controller.dispose();
-});
-
 test("workspace lookup supplies real document context for ordinary transcript hover", async () => {
   const { createNativeTranscriptController } = await native(),
     f = fixture();
@@ -456,17 +406,16 @@ test("workspace lookup supplies real document context for ordinary transcript ho
     character: 12,
   } satisfies SourceAnchor & NavigationLocation;
   f.resolveSymbol = async () => ({
-    kind: "virtual-document",
+    kind: "workspace-symbol-query",
     token: "calculateTotal",
     languageId: "typescript",
-    uri: "file:///snippet.ts",
-    text: "calculateTotal()",
-    readOnly: true,
-    origin: "fence",
-    position: { line: 0, character: 0 },
   });
   f.findWorkspaceSymbols = async (source, { signal }) => {
-    assert.equal(source.token, "calculateTotal");
+    assert.deepEqual(source, {
+      kind: "workspace-symbol-query",
+      token: "calculateTotal",
+      languageId: "typescript",
+    });
     assert.equal(signal.aborted, false);
     return [target];
   };
@@ -643,4 +592,47 @@ test("workspace lookup cannot navigate after transcript focus changes", async ()
   assert.deepEqual(f.seen.opened, []);
   assert.deepEqual(f.seen.lsp, []);
   controller.dispose();
+});
+
+test("a workspace query without a lookup never reaches document LSP", async () => {
+  const { createNativeTranscriptController } = await native(),
+    f = fixture();
+  f.resolveSymbol = async () => ({
+    kind: "workspace-symbol-query",
+    token: "calculateTotal",
+    languageId: "typescript",
+  });
+  const controller = createNativeTranscriptController(f);
+  await controller.invoke("hover", f.snapshot);
+  assert.deepEqual(f.seen.lsp, []);
+  assert.deepEqual(f.seen.overlay, []);
+  assert.deepEqual(f.seen.opened, []);
+  controller.dispose();
+});
+
+test("disposing during workspace lookup aborts it and suppresses late results", async () => {
+  const { createNativeTranscriptController } = await native(),
+    f = fixture();
+  let release!: (value: (SourceAnchor & NavigationLocation)[]) => void;
+  let signal!: AbortSignal;
+  f.resolveSymbol = async () => ({
+    kind: "workspace-symbol-query",
+    token: "calculateTotal",
+  });
+  f.findWorkspaceSymbols = (_source, options) => {
+    signal = options.signal;
+    return new Promise((resolve) => {
+      release = resolve;
+    });
+  };
+  const controller = createNativeTranscriptController(f);
+  const pending = controller.invoke("definition", f.snapshot);
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.dispose();
+  assert.equal(signal.aborted, true);
+  release([{ ...f.anchor, line: 19, character: 12 }]);
+  await pending;
+  assert.deepEqual(f.seen.lsp, []);
+  assert.deepEqual(f.seen.overlay, []);
+  assert.deepEqual(f.seen.opened, []);
 });

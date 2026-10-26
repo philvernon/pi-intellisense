@@ -44,6 +44,7 @@ export function createStdioLspTransport({
     closed = true;
     for (const p of pending.values()) {
       clearTimeout(p.timer);
+      p.cleanup();
       p.reject(new Error(message));
     }
     pending.clear();

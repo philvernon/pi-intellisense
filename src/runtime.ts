@@ -242,7 +242,10 @@ export function createLspManager({
         "No configured language server for " + path.extname(file),
       );
     const entry = await session(languageId, signal);
-    await entry.client.open({ uri, text, version: 1 });
+    await wait(
+      entry.client.open({ uri, text, languageId, version: 1 }),
+      signal,
+    );
     entry.hasDocument = true;
     return entry.client;
   }
@@ -284,6 +287,7 @@ export function createLspManager({
               await entry.client.open({
                 uri: pathToFileURL(source).href,
                 text,
+                languageId: languageForFile(source) ?? undefined,
                 version: 1,
               });
               entry.hasDocument = true;

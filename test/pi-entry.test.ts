@@ -367,3 +367,120 @@ test("K collapses workspace aliases to one definition; gr alone lists usages", (
     },
     ["--workspace-aliases"],
   ));
+
+for (const method of [
+  "textDocument/documentSymbol",
+  "textDocument/definition",
+]) {
+  test(`workspace lookup reports ${method} failures instead of hiding them as missing symbols`, () =>
+    workspace(
+      async (root) => {
+        const h = harness(root);
+        try {
+          await h.start();
+          await h.registration().invoke(
+            "hover",
+            snapshot({
+              sourceText: snapshot().sourceText.replace(
+                ' source="a.ts" lines="1-2"',
+                "",
+              ),
+            }),
+          );
+          assert.equal(h.notices.length, 1);
+          assert.match(h.notices[0], /simulated textDocument\/.* failure/);
+          assert.doesNotMatch(h.notices[0], /No workspace symbol found/);
+          assert.deepEqual(h.overlays, []);
+        } finally {
+          await h.shutdown();
+        }
+      },
+      [`--fail-method=${method}`],
+    ));
+}
+
+test("a failed alias lookup is reported even when another candidate succeeded", () =>
+  workspace(
+    async (root) => {
+      await writeFile(
+        path.join(root, "b.ts"),
+        'export {state} from "./a.js";\n',
+      );
+      const h = harness(root);
+      try {
+        await h.start();
+        await h.registration().invoke(
+          "hover",
+          snapshot({
+            sourceText: snapshot().sourceText.replace(
+              ' source="a.ts" lines="1-2"',
+              "",
+            ),
+          }),
+        );
+        assert.equal(h.notices.length, 1);
+        assert.match(
+          h.notices[0],
+          /simulated textDocument\/definition failure/,
+        );
+        assert.deepEqual(h.overlays, []);
+      } finally {
+        await h.shutdown();
+      }
+    },
+    [
+      "--workspace-aliases",
+      "--fail-method=textDocument/definition",
+      "--fail-file=b.ts",
+    ],
+  ));
+
+test("unavailable workspace files are still skipped without hiding valid candidates", () =>
+  workspace(
+    async (root) => {
+      const h = harness(root);
+      try {
+        await h.start();
+        await h.registration().invoke(
+          "hover",
+          snapshot({
+            sourceText: snapshot().sourceText.replace(
+              ' source="a.ts" lines="1-2"',
+              "",
+            ),
+          }),
+        );
+        assert.deepEqual(h.notices, []);
+        assert.equal(h.overlays.length, 1);
+        assert.match(h.overlays[0].text, /actual mock hover.*0:13/);
+      } finally {
+        await h.shutdown();
+      }
+    },
+    ["--workspace-aliases"],
+  ));
+
+test("flat document symbols refine workspace positions without inventing a selection range", () =>
+  workspace(
+    async (root) => {
+      const h = harness(root);
+      try {
+        await h.start();
+        await h.registration().invoke(
+          "hover",
+          snapshot({
+            sourceText: snapshot().sourceText.replace(
+              ' source="a.ts" lines="1-2"',
+              "",
+            ),
+          }),
+        );
+        assert.deepEqual(h.notices, []);
+        assert.equal(h.overlays.length, 1);
+        assert.match(h.overlays[0].text, /actual mock hover.*0:13/);
+      } finally {
+        await h.shutdown();
+      }
+    },
+    ["--flat-symbols"],
+  ));

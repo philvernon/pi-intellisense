@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createLspSession } from "../src/lsp.ts";
-import type { LspTransport, RequestOptions } from "../src/lsp/types.ts";
-import { record } from "./helpers.ts";
+import { normalizeDocumentSymbols } from "../src/lsp/normalize.ts";
+import type {
+  DocumentSymbol,
+  LspTransport,
+  RequestOptions,
+  SymbolInformation,
+} from "../src/lsp/types.ts";
+import { deferred, record } from "./helpers.ts";
 
 type RpcEvent = { method: string; params: unknown; options?: RequestOptions };
 function fakeTransport(respond: LspTransport["request"] = async () => null) {
@@ -28,7 +34,6 @@ const capabilities = {
   hoverProvider: true,
   definitionProvider: true,
   referencesProvider: true,
-  completionProvider: {},
   textDocumentSync: 1,
   positionEncoding: "utf-16",
 };
@@ -50,6 +55,21 @@ test("LS-01: initializes protocol then notifies initialized and opens snapshot",
     record(record(record(transport.requests[0].params).capabilities).general)
       .positionEncodings,
     ["utf-16"],
+  );
+  assert.deepEqual(
+    Object.keys(
+      record(record(transport.requests[0].params).capabilities).textDocument ??
+        {},
+    ).sort(),
+    [
+      "declaration",
+      "definition",
+      "documentSymbol",
+      "hover",
+      "implementation",
+      "references",
+      "typeDefinition",
+    ],
   );
   assert.equal(client.positionEncoding, "utf-16");
   assert.equal(transport.notifications[0].method, "initialized");
@@ -106,29 +126,6 @@ test("LS-03: definition and references use distinct LSP methods", async () => {
     (x) => x.method === "textDocument/references",
   );
   assert.deepEqual(record(refs?.params).context, { includeDeclaration: true });
-});
-
-test("LS-04: completion is query-only; client never sends an edit to source", async () => {
-  const transport = fakeTransport(async (method) =>
-    method === "initialize"
-      ? { capabilities }
-      : { isIncomplete: false, items: [{ label: "value" }] },
-  );
-  const client = createLspSession({
-    transport,
-    rootUri,
-    languageId: "typescript",
-  });
-  await client.initialize();
-  await client.open({ uri, text, version: 1 });
-  const result = await client.completion({ uri, position });
-  assert.equal(record((record(result).items as unknown[])[0]).label, "value");
-  assert.ok(
-    transport.requests.some((x) => x.method === "textDocument/completion"),
-  );
-  assert.ok(
-    !transport.notifications.some((x) => x.method === "workspace/applyEdit"),
-  );
 });
 
 test("LS-05: unsupported LSP capability is surfaced, not synthesized by the model", async () => {
@@ -388,4 +385,264 @@ test("LS-14: workspace lookup forwards cancellation to symbol resolution", async
     client.workspaceSymbols("myMethod", { signal: controller.signal }),
     /cancelled/,
   );
+});
+
+const declarationRange = {
+  start: { line: 0, character: 0 },
+  end: { line: 3, character: 1 },
+};
+const selectionRange = {
+  start: { line: 0, character: 6 },
+  end: { line: 0, character: 11 },
+};
+const documentSymbol: DocumentSymbol = {
+  name: "value",
+  kind: 12,
+  detail: "function value()",
+  tags: [1],
+  deprecated: true,
+  range: declarationRange,
+  selectionRange,
+  children: [
+    { name: "child", kind: 13, range: selectionRange, selectionRange },
+  ],
+};
+const flatSymbol: SymbolInformation = {
+  name: "value",
+  kind: 12,
+  tags: [1],
+  deprecated: true,
+  containerName: "Module",
+  location: { uri, range: declarationRange },
+};
+
+test("document symbols: validated hierarchy retains exact selections, metadata and children without copying", async (t) => {
+  const transport = fakeTransport(async (method) =>
+    method === "initialize"
+      ? { capabilities: { documentSymbolProvider: true } }
+      : [documentSymbol],
+  );
+  const client = createLspSession({
+    transport,
+    rootUri,
+    languageId: "typescript",
+  });
+  t.after(() => client.dispose());
+  await client.initialize();
+  await client.open({ uri, text });
+  const result = normalizeDocumentSymbols(
+    await client.documentSymbols({ uri }),
+    uri,
+  );
+  assert.deepEqual(result, [documentSymbol]);
+  assert.equal(result[0], documentSymbol);
+  assert.equal(result[0].children, documentSymbol.children);
+  assert.deepEqual(normalizeDocumentSymbols(null, uri), []);
+});
+
+test("document symbols: flat symbols retain declaration ranges, filter files and never invent name selections", async (t) => {
+  const other = {
+    ...flatSymbol,
+    location: { ...flatSymbol.location, uri: "file:///project/other.ts" },
+  };
+  const transport = fakeTransport(async (method) =>
+    method === "initialize"
+      ? { capabilities: { documentSymbolProvider: true } }
+      : [{ ...flatSymbol, selectionRange }, other],
+  );
+  const client = createLspSession({
+    transport,
+    rootUri,
+    languageId: "typescript",
+  });
+  t.after(() => client.dispose());
+  await client.initialize();
+  await client.open({ uri, text });
+  const response = await client.documentSymbols({ uri });
+  const normalized = normalizeDocumentSymbols(response, uri);
+  assert.equal(normalized[0].selectionRange, undefined);
+  assert.deepEqual(normalized, [
+    {
+      name: "value",
+      kind: 12,
+      tags: [1],
+      deprecated: true,
+      containerName: "Module",
+      range: declarationRange,
+    },
+  ]);
+  assert.equal(normalized[0].range, declarationRange);
+  assert.equal(normalizeDocumentSymbols(response).length, 2);
+  assert.deepEqual(
+    normalizeDocumentSymbols(response, "file:///missing.ts"),
+    [],
+  );
+});
+
+const malformedSymbols: unknown[] = [
+  {},
+  [{ ...documentSymbol, kind: 1.5 }],
+  [
+    {
+      ...documentSymbol,
+      range: { start: declarationRange.end, end: declarationRange.start },
+    },
+  ],
+  [
+    {
+      ...documentSymbol,
+      selectionRange: {
+        start: { line: 4, character: 0 },
+        end: { line: 4, character: 1 },
+      },
+    },
+  ],
+  [
+    {
+      ...documentSymbol,
+      selectionRange: {
+        start: { line: 0, character: 0 },
+        end: { line: 0, character: 1 },
+      },
+      range: selectionRange,
+    },
+  ],
+  [
+    {
+      ...documentSymbol,
+      children: [{ ...documentSymbol, selectionRange: null }],
+    },
+  ],
+  [{ ...documentSymbol, detail: false }],
+  [{ ...documentSymbol, tags: ["deprecated"] }],
+  [{ ...flatSymbol, kind: undefined }],
+  [{ ...flatSymbol, kind: 1.5 }],
+  [{ ...flatSymbol, deprecated: "yes" }],
+  [{ ...flatSymbol, location: { uri } }],
+  [documentSymbol, flatSymbol],
+];
+for (const [index, response] of malformedSymbols.entries()) {
+  test(`document symbols: rejects malformed response at external boundary (${index})`, async (t) => {
+    const transport = fakeTransport(async (method) =>
+      method === "initialize"
+        ? { capabilities: { documentSymbolProvider: true } }
+        : response,
+    );
+    const client = createLspSession({
+      transport,
+      rootUri,
+      languageId: "typescript",
+    });
+    t.after(() => client.dispose());
+    await client.initialize();
+    await client.open({ uri, text });
+    await assert.rejects(
+      client.documentSymbols({ uri }),
+      /Malformed LSP result for textDocument\/documentSymbol/,
+    );
+  });
+}
+
+test("document transitions: serialize changes, skip duplicate text and keep versions monotonic", async (t) => {
+  const transport = fakeTransport(async (method) =>
+    method === "initialize" ? { capabilities } : null,
+  );
+  const opened = deferred();
+  const release = deferred();
+  const notify = transport.notify.bind(transport);
+  transport.notify = async (method, params) => {
+    await notify(method, params);
+    if (method === "textDocument/didOpen") {
+      opened.resolve();
+      await release.promise;
+    }
+  };
+  const client = createLspSession({
+    transport,
+    rootUri,
+    languageId: "typescript",
+  });
+  t.after(() => client.dispose());
+  await client.initialize();
+  const first = client.open({ uri, text: "first", version: 7 });
+  await opened.promise;
+  const duplicate = client.open({ uri, text: "first", version: 100 });
+  const second = client.open({ uri, text: "second", version: 1 });
+  const third = client.open({ uri, text: "third", version: 10 });
+  const fourth = client.open({ uri, text: "fourth", version: 2 });
+  await Promise.resolve();
+  assert.deepEqual(
+    transport.notifications.map(({ method }) => method),
+    ["initialized", "textDocument/didOpen"],
+  );
+  release.resolve();
+  await Promise.all([first, duplicate, second, third, fourth]);
+  assert.deepEqual(transport.notifications.slice(1), [
+    {
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: {
+          uri,
+          languageId: "typescript",
+          version: 7,
+          text: "first",
+        },
+      },
+    },
+    ...[
+      ["second", 8],
+      ["third", 10],
+      ["fourth", 11],
+    ].map(([text, version]) => ({
+      method: "textDocument/didChange",
+      params: { textDocument: { uri, version }, contentChanges: [{ text }] },
+    })),
+  ]);
+});
+
+test("document transitions: failed notification does not advance state or poison later opens", async (t) => {
+  const transport = fakeTransport(async (method) =>
+    method === "initialize" ? { capabilities } : null,
+  );
+  const notify = transport.notify.bind(transport);
+  let fail = "textDocument/didOpen";
+  transport.notify = async (method, params) => {
+    if (method === fail) {
+      fail = "";
+      throw new Error("notify failed");
+    }
+    await notify(method, params);
+  };
+  const client = createLspSession({
+    transport,
+    rootUri,
+    languageId: "typescript",
+  });
+  t.after(() => client.dispose());
+  await client.initialize();
+  const failed = assert.rejects(client.open({ uri, text }), /notify failed/);
+  const retry = client.open({ uri, text });
+  await Promise.all([failed, retry]);
+  fail = "textDocument/didChange";
+  const changed = assert.rejects(
+    client.open({ uri, text: "changed" }),
+    /notify failed/,
+  );
+  const retried = client.open({ uri, text: "changed" });
+  await Promise.all([changed, retried]);
+  assert.deepEqual(transport.notifications.slice(1), [
+    {
+      method: "textDocument/didOpen",
+      params: {
+        textDocument: { uri, languageId: "typescript", version: 1, text },
+      },
+    },
+    {
+      method: "textDocument/didChange",
+      params: {
+        textDocument: { uri, version: 2 },
+        contentChanges: [{ text: "changed" }],
+      },
+    },
+  ]);
 });

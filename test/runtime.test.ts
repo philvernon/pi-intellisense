@@ -541,3 +541,211 @@ test("runtime: unsupported workspace provider is surfaced before attempting proj
     !transport.events.some((event) => event.method === "textDocument/didOpen"),
   );
 });
+
+for (const texts of [
+  ["same", "same", "same"],
+  ["first", "second", "third"],
+]) {
+  test(`runtime: concurrent same-URI gets serialize ${texts[0] === texts[1] ? "duplicate opens" : "text versions"}`, async (t) => {
+    const transport = symbolTransport();
+    const opened = deferred();
+    const release = deferred();
+    const notify = transport.notify.bind(transport);
+    transport.notify = async (method, params) => {
+      await notify(method, params);
+      if (method === "textDocument/didOpen") {
+        opened.resolve();
+        await release.promise;
+      }
+    };
+    const manager = createLspManager({ cwd, createTransport: () => transport });
+    t.after(() => manager.close());
+    const uri = pathToFileURL(file).href;
+    const pending = texts.map((text) => manager.get(file, text));
+    await opened.promise;
+    assert.equal(
+      transport.events.filter(({ method }) => method === "initialize").length,
+      1,
+    );
+    assert.equal(
+      transport.events.filter(({ method }) => method === "textDocument/didOpen")
+        .length,
+      1,
+    );
+    release.resolve();
+    const clients = await Promise.all(pending);
+    assert.ok(clients.every((client) => client === clients[0]));
+    const transitions = transport.events.filter(({ method }) =>
+      /^textDocument\/did(Open|Change)$/.test(method),
+    );
+    assert.deepEqual(transitions, [
+      {
+        method: "textDocument/didOpen",
+        params: {
+          textDocument: {
+            uri,
+            languageId: "typescript",
+            version: 1,
+            text: texts[0],
+          },
+        },
+      },
+      ...(texts[0] === texts[1]
+        ? []
+        : texts.slice(1).map((text, index) => ({
+            method: "textDocument/didChange",
+            params: {
+              textDocument: { uri, version: index + 2 },
+              contentChanges: [{ text }],
+            },
+          }))),
+    ]);
+  });
+}
+
+for (const languages of [
+  ["ts", "typescript", "tsx", "typescriptreact"],
+  ["tsx", "typescriptreact", "ts", "typescript"],
+  ["js", "javascript", "jsx", "javascriptreact"],
+  ["jsx", "javascriptreact", "js", "javascript"],
+]) {
+  const [firstExt, firstId, secondExt, secondId] = languages;
+  test(`runtime: pooled ${firstExt}/${secondExt} session opens each document with its actual language ID`, async (t) => {
+    const transport = symbolTransport();
+    let starts = 0;
+    const manager = createLspManager({
+      cwd,
+      createTransport: () => {
+        starts++;
+        return transport;
+      },
+    });
+    t.after(() => manager.close());
+    const firstFile = path.join(cwd, `first.${firstExt}`);
+    const secondFile = path.join(cwd, `second.${secondExt}`);
+    const first = await manager.get(firstFile, "first");
+    const second = await manager.get(secondFile, "second");
+    assert.equal(first, second);
+    assert.equal(starts, 1);
+    assert.deepEqual(
+      transport.events
+        .filter(({ method }) => method === "textDocument/didOpen")
+        .map(({ params }) => record(params).textDocument),
+      [
+        {
+          uri: pathToFileURL(firstFile).href,
+          text: "first",
+          languageId: firstId,
+          version: 1,
+        },
+        {
+          uri: pathToFileURL(secondFile).href,
+          text: "second",
+          languageId: secondId,
+          version: 1,
+        },
+      ],
+    );
+  });
+}
+
+for (const [extension, requestedId, actualId] of [
+  ["tsx", "typescript", "typescriptreact"],
+  ["ts", "typescriptreact", "typescript"],
+  ["jsx", "javascript", "javascriptreact"],
+  ["js", "javascriptreact", "javascript"],
+]) {
+  test(`runtime: cold ${requestedId} workspace attachment opens .${extension} with ${actualId}`, async (t) => {
+    const directory = await workspace(t);
+    const source = path.join(directory, `index.${extension}`);
+    await writeFile(source, "source");
+    const transport = symbolTransport();
+    const manager = createLspManager({
+      cwd: directory,
+      createTransport: () => transport,
+    });
+    t.after(() => manager.close());
+    await manager.workspaceSymbols({
+      query: "myMethod",
+      languageId: requestedId,
+    });
+    const opened = transport.events.find(
+      ({ method }) => method === "textDocument/didOpen",
+    );
+    assert.deepEqual(record(opened?.params).textDocument, {
+      uri: pathToFileURL(source).href,
+      text: "source",
+      languageId: actualId,
+      version: 1,
+    });
+  });
+}
+
+test("runtime: explicit document language ID overrides extension without changing pooling", async (t) => {
+  const transport = symbolTransport();
+  let starts = 0;
+  const manager = createLspManager({
+    cwd,
+    createTransport: () => {
+      starts++;
+      return transport;
+    },
+  });
+  t.after(() => manager.close());
+  const first = await manager.get(file, "first", {
+    uri: "file:///virtual-one",
+    languageId: "typescriptreact",
+  });
+  const second = await manager.get(file, "second", {
+    uri: "file:///virtual-two",
+    languageId: "typescript",
+  });
+  assert.equal(first, second);
+  assert.equal(starts, 1);
+  assert.deepEqual(
+    transport.events
+      .filter(({ method }) => method === "textDocument/didOpen")
+      .map(({ params }) => record(record(params).textDocument).languageId),
+    ["typescriptreact", "typescript"],
+  );
+});
+
+test("runtime: cancelling a blocked open waiter leaves shared transition and unrelated documents independent", async (t) => {
+  const transport = symbolTransport();
+  const opened = deferred();
+  const release = deferred();
+  const uri = pathToFileURL(file).href;
+  const notify = transport.notify.bind(transport);
+  transport.notify = async (method, params) => {
+    await notify(method, params);
+    if (
+      method === "textDocument/didOpen" &&
+      record(record(params).textDocument).uri === uri
+    ) {
+      opened.resolve();
+      await release.promise;
+    }
+  };
+  const manager = createLspManager({ cwd, createTransport: () => transport });
+  t.after(() => manager.close());
+  const controller = new AbortController();
+  const cancelled = manager.get(file, "shared", { signal: controller.signal });
+  await opened.promise;
+  const survivor = manager.get(file, "shared");
+  controller.abort();
+  await assert.rejects(cancelled, /cancelled/);
+  const unrelated = await manager.get(file, "other", {
+    uri: "file:///other.ts",
+  });
+  assert.equal(
+    transport.events.filter(({ method }) => method === "textDocument/didOpen")
+      .length,
+    2,
+  );
+  release.resolve();
+  assert.equal(await survivor, unrelated);
+  assert.equal(await manager.get(file, "shared"), unrelated);
+  assert.ok(
+    !transport.events.some(({ method }) => method === "textDocument/didChange"),
+  );
+});

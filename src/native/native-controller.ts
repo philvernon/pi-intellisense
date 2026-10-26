@@ -1,18 +1,18 @@
 import { normalizeLocations, normalizeHover } from "../lsp/normalize.ts";
 import { showInlineHover, type NativeUI } from "./inline-hover.ts";
 import type { Snapshot, IntelliSenseAction } from "../bridge/register.ts";
-import type { SourceAnchor } from "./transcript-source.ts";
+import type {
+  SourceAnchor,
+  WorkspaceSymbolQuery,
+} from "./transcript-source.ts";
 import { placeHoverOverlay, type OverlayGeometry } from "./overlay-geometry.ts";
 import { truncateToWidth, matchesKey, Key } from "@earendil-works/pi-tui";
 import { stripAnsi, type Position } from "../positions.ts";
 
-import type { UnmappedSource, UnmappedReason } from "./provenance-resolver.ts";
-export type WorkspaceSymbolQuery = {
-  kind: "workspace-symbol-query";
-  token: string;
-  languageId?: string;
-};
-export type Resolution = SourceAnchor | WorkspaceSymbolQuery | UnmappedSource;
+import type {
+  SourceResolution,
+  UnmappedReason,
+} from "./provenance-resolver.ts";
 export interface NavigationLocation {
   uri: string;
   line: number;
@@ -22,7 +22,6 @@ export interface SourceRequest {
   kind: IntelliSenseAction;
   uri: string;
   position: Position;
-  documentVersion?: string;
   source: SourceAnchor;
   signal: AbortSignal;
 }
@@ -35,11 +34,9 @@ export interface ControllerDependencies {
       options: { signal: AbortSignal; isCurrent: () => Promise<boolean> },
     ) => Promise<unknown>;
   };
-  resolveSymbol: (snapshot: Snapshot) => Promise<Resolution | null>;
+  resolveSymbol: (snapshot: Snapshot) => Promise<SourceResolution | null>;
   findWorkspaceSymbols?: (
-    source:
-      | WorkspaceSymbolQuery
-      | Extract<SourceAnchor, { kind: "virtual-document" }>,
+    source: WorkspaceSymbolQuery,
     options: { signal: AbortSignal },
   ) => Promise<(SourceAnchor & NavigationLocation)[]>;
   getSession: () => { sessionId: string; transcriptRevision: string };
@@ -171,7 +168,7 @@ export function createNativeTranscriptController({
         ? snapshot.isNavigationCurrent()
         : current(snapshot));
     let navigationStarted = false;
-    let anchor: Resolution | null;
+    let anchor: SourceResolution | null;
     try {
       anchor = await resolveSymbol(snapshot);
     } catch (e) {
@@ -188,8 +185,6 @@ export function createNativeTranscriptController({
         "cursor-not-symbol": "No code symbol at the transcript cursor",
         ambiguous:
           "Multiple source locations match; include more surrounding code",
-        "virtual-document-unsupported":
-          "Generated snippet needs a provider supporting virtual LSP documents",
         "source-unknown":
           "No source identity for this transcript item; update pi-tab-focus if needed",
         "source-unavailable": "Source is missing or outside the workspace",
@@ -205,11 +200,7 @@ export function createNativeTranscriptController({
       return;
     }
     try {
-      if (
-        (anchor.kind === "virtual-document" ||
-          anchor.kind === "workspace-symbol-query") &&
-        findWorkspaceSymbols
-      ) {
+      if (anchor.kind === "workspace-symbol-query" && findWorkspaceSymbols) {
         const symbols = await findWorkspaceSymbols(anchor, { signal });
         if (!still()) return;
         if (!symbols.length) {
@@ -230,8 +221,6 @@ export function createNativeTranscriptController({
         kind: action,
         uri: anchor.uri,
         position: anchor.position,
-        documentVersion:
-          anchor.kind === "verified-file" ? anchor.fileHash : undefined,
         source: anchor,
         signal,
       });
@@ -242,12 +231,8 @@ export function createNativeTranscriptController({
       }
       if (!still()) return;
       if (action === "hover") {
-        const text =
-          normalizeHover(response)?.markdown || "No hover information";
         const markup =
-          anchor.kind === "virtual-document"
-            ? "Snippet only (no matching source file)\n\n" + text
-            : text;
+          normalizeHover(response)?.markdown || "No hover information";
         await showInlineHover({
           ui,
           snapshot,
@@ -266,14 +251,7 @@ export function createNativeTranscriptController({
       }
       const locations = normalizeLocations(response);
       if (!locations.length) {
-        ui.notify?.(
-          "No " +
-            action +
-            " location" +
-            (anchor.kind === "virtual-document"
-              ? " — snippet has no matching source file; read the source first"
-              : ""),
-        );
+        ui.notify?.("No " + action + " location");
         return;
       }
       const source = anchor;

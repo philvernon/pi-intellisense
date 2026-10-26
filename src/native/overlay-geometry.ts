@@ -7,37 +7,6 @@ export interface OverlayGeometry {
   terminal: TerminalSize;
   protectedRows?: { top: number; bottom: number };
 }
-export function projectTranscriptCursor({
-  cursor,
-  viewport,
-  terminal,
-}: {
-  cursor: Cursor;
-  viewport: {
-    scrollTop: number;
-    top: number;
-    left: number;
-    height: number;
-    width: number;
-  };
-  terminal: TerminalSize;
-}) {
-  const { scrollTop, top, left, height, width } = viewport;
-  const row = top + cursor.row - scrollTop,
-    col = left + cursor.col;
-  if (
-    cursor.row < scrollTop ||
-    cursor.row >= scrollTop + height ||
-    cursor.col < 0 ||
-    cursor.col >= width ||
-    row < 0 ||
-    row >= terminal.rows ||
-    col < 0 ||
-    col >= terminal.cols
-  )
-    return null;
-  return { row, col };
-}
 export function placeHoverOverlay({
   anchor,
   tooltip,

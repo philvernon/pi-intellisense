@@ -110,7 +110,7 @@ test("repeated lines within one block resolve by rendered row, not first string 
     assert.deepEqual(result.position, { line: 1, character: 0 });
   }));
 
-test("wrong file text, wrong ranges and malformed annotations cannot fall back to a virtual document", () =>
+test("wrong file text, wrong ranges and malformed annotations cannot fall back to workspace search", () =>
   workspace(async (root) => {
     await writeFile(path.join(root, "src/a.ts"), "// header\n" + code + "\n");
     for (const [annotation, expected] of [
@@ -216,18 +216,16 @@ test("number-like raw source text is never stripped to match a different file", 
     assert.equal((await unmapped(s, { root, entries })).reason, "stale-source");
   }));
 
-test("ordinary generated fence remains virtual even when prose mentions an existing file", () =>
+test("ordinary generated fence requests workspace search even when prose mentions an existing file", () =>
   workspace(async (root) => {
     await writeFile(path.join(root, "src/a.ts"), code + "\n");
     const s = snapshot("See src/a.ts\n" + fence(code, ""), code, { row: 1 });
     const result = await resolveTranscriptProvenance(s, { root });
-    assert.ok(result.kind === "virtual-document");
-    assert.equal(result.languageId, "typescript");
-    assert.deepEqual(result.position, { line: 1, character: 12 });
-    assert.equal(
-      (await unmapped(s, { root, allowVirtual: false })).reason,
-      "virtual-document-unsupported",
-    );
+    assert.deepEqual(result, {
+      kind: "workspace-symbol-query",
+      token: "state",
+      languageId: "typescript",
+    });
   }));
 
 test("original Markdown is required; rendered fences cannot invent provenance", () =>
@@ -423,13 +421,12 @@ test("an ordinary assistant quote recovers its real file and position from a pri
     const entries = readEntries("r1", "src/a.ts", content);
     const result = await resolveTranscriptProvenance(
       snapshot(fence(code, ""), code, { row: 1 }),
-      { root, entries, allowVirtual: false },
+      { root, entries },
     );
     assert.ok(result.kind === "verified-file");
     assert.equal(result.origin, "read-quote");
     assert.match(result.uri, /\/src\/a.ts$/);
     assert.deepEqual(result.position, { line: 3, character: 12 });
-    assert.equal(result.sourceText, content);
   }));
 
 test("quotes may remove common indentation without losing real UTF-16 columns", () =>
@@ -487,14 +484,16 @@ test("duplicate quote locations in different read files defer to workspace resol
       ...readEntries("r1", "src/a.ts", code),
       ...readEntries("r2", "src/b.ts", code),
     ];
-    assert.equal(
-      (
-        await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
-          root,
-          entries,
-        })
-      ).kind,
-      "virtual-document",
+    assert.deepEqual(
+      await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
+        root,
+        entries,
+      }),
+      {
+        kind: "workspace-symbol-query",
+        token: "state",
+        languageId: "typescript",
+      },
     );
   }));
 
@@ -523,14 +522,16 @@ test("repeated code in one read is ambiguous, but a partial read supplies a uniq
     const content = code + "\n\n" + code;
     await writeFile(path.join(root, "src/a.ts"), content);
     const s = snapshot(fence(code, ""), code, { row: 1 });
-    assert.equal(
-      (
-        await resolveTranscriptProvenance(s, {
-          root,
-          entries: readEntries("all", "src/a.ts", content),
-        })
-      ).kind,
-      "virtual-document",
+    assert.deepEqual(
+      await resolveTranscriptProvenance(s, {
+        root,
+        entries: readEntries("all", "src/a.ts", content),
+      }),
+      {
+        kind: "workspace-symbol-query",
+        token: "state",
+        languageId: "typescript",
+      },
     );
     const entries = readEntries("partial", "src/a.ts", code, 4);
     assert.deepEqual((await verified(s, { root, entries })).position, {
@@ -546,14 +547,16 @@ test("stale read-backed quotes defer to current workspace resolution", () =>
       "const state = 99;\nconsole.log(state);",
     );
     const s = snapshot(fence(code, ""), code, { row: 1 });
-    assert.equal(
-      (
-        await resolveTranscriptProvenance(s, {
-          root,
-          entries: readEntries("r1", "src/a.ts", code),
-        })
-      ).kind,
-      "virtual-document",
+    assert.deepEqual(
+      await resolveTranscriptProvenance(s, {
+        root,
+        entries: readEntries("r1", "src/a.ts", code),
+      }),
+      {
+        kind: "workspace-symbol-query",
+        token: "state",
+        languageId: "typescript",
+      },
     );
   }));
 
@@ -565,14 +568,16 @@ test("a stale candidate in another file cannot silently lend its quote to the re
       ...readEntries("r1", "src/a.ts", code),
       ...readEntries("r2", "src/b.ts", code),
     ];
-    assert.equal(
-      (
-        await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
-          root,
-          entries,
-        })
-      ).kind,
-      "virtual-document",
+    assert.deepEqual(
+      await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
+        root,
+        entries,
+      }),
+      {
+        kind: "workspace-symbol-query",
+        token: "state",
+        languageId: "typescript",
+      },
     );
   }));
 
@@ -600,14 +605,16 @@ test("unread portions of a known file do not invent source identity for a quote"
     const content = "// header\n" + code;
     await writeFile(path.join(root, "src/a.ts"), content);
     const entries = readEntries("partial", "src/a.ts", "// header", 1);
-    assert.equal(
-      (
-        await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
-          root,
-          entries,
-        })
-      ).kind,
-      "virtual-document",
+    assert.deepEqual(
+      await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
+        root,
+        entries,
+      }),
+      {
+        kind: "workspace-symbol-query",
+        token: "state",
+        languageId: "typescript",
+      },
     );
   }));
 
@@ -620,14 +627,40 @@ test("failed or natively truncated read results cannot supply automatic quote pr
     ]) {
       const entries = readEntries("r1", "src/a.ts", code);
       Object.assign(entries[1].message, details);
-      assert.equal(
-        (
-          await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
-            root,
-            entries,
-          })
-        ).kind,
-        "virtual-document",
+      assert.deepEqual(
+        await resolveTranscriptProvenance(snapshot(fence(code, ""), code), {
+          root,
+          entries,
+        }),
+        {
+          kind: "workspace-symbol-query",
+          token: "state",
+          languageId: "typescript",
+        },
       );
+    }
+  }));
+
+test("unbound fences map Unicode tokens using terminal cells without creating a document", () =>
+  workspace(async (root) => {
+    const line = '\tconst c = "界😃"; café();';
+    const display = line.replace(/\t/gu, "   ");
+    const s = snapshot(fence(line, ""), display, { token: "café" });
+    s.visualCursor!.col = 2 + display.indexOf("café") + 1;
+    assert.deepEqual(await resolveTranscriptProvenance(s, { root }), {
+      kind: "workspace-symbol-query",
+      token: "café",
+      languageId: "typescript",
+    });
+    s.visualCursor!.col += 5;
+    assert.equal((await unmapped(s, { root })).reason, "cursor-not-symbol");
+  }));
+
+test("unbound fences without a supported language retain unmappable fallback policy", () =>
+  workspace(async (root) => {
+    for (const language of ["", "unknown"]) {
+      const s = snapshot("```" + language + "\n" + code + "\n```", code);
+      s.renderedLines[1] = "```" + language;
+      assert.equal((await unmapped(s, { root })).reason, "wrapped-unmappable");
     }
   }));

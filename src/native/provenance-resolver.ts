@@ -13,20 +13,9 @@ import {
 } from "./transcript-source.ts";
 import type {
   RenderedRegion,
-  ResolvedSymbol,
-  SourceLine,
-} from "./transcript-source.ts";
-
-export type {
-  DisplayLine,
-  RenderedMetadata,
-  RenderedRegion,
-  ResolvedSymbol,
   SourceAnchor,
   SourceLine,
-  SourceRegion,
-  VerifiedSource,
-  VirtualSource,
+  WorkspaceSymbolQuery,
 } from "./transcript-source.ts";
 
 export type UnmappedReason =
@@ -36,7 +25,6 @@ export type UnmappedReason =
   | "stale-source"
   | "source-unavailable"
   | "source-unknown"
-  | "virtual-document-unsupported"
   | "wrapped-unmappable";
 
 export interface UnmappedSource {
@@ -44,7 +32,8 @@ export interface UnmappedSource {
   reason: UnmappedReason;
 }
 
-export type SourceResolution = ResolvedSymbol | UnmappedSource;
+export type SourceResolution =
+  SourceAnchor | WorkspaceSymbolQuery | UnmappedSource;
 
 export interface ProvenanceFileSystem {
   realpath(path: string): Promise<string>;
@@ -55,7 +44,6 @@ export interface ResolveTranscriptProvenanceOptions {
   root: string;
   entries?: readonly unknown[];
   fs?: ProvenanceFileSystem;
-  allowVirtual?: boolean;
 }
 
 export interface ReadFileReference {
@@ -357,11 +345,10 @@ export async function resolveTranscriptProvenance(
   snapshot: Snapshot | null | undefined,
   options: ResolveTranscriptProvenanceOptions,
 ): Promise<SourceResolution> {
-  const { root, entries = [], fs = nodeFs, allowVirtual = true } = options;
+  const { root, entries = [], fs = nodeFs } = options;
   if (!snapshot?.visualCursor) return unmapped("cursor-not-symbol");
   const cursor = snapshot.visualCursor;
   const regions: RenderedRegion[] = [];
-  const files = new Map<string, string>();
   if (snapshot.itemKind === "tool") {
     const records = readFileReferences(entries).filter(
       (record) => record.toolCallId === snapshot.toolCallId,
@@ -373,12 +360,10 @@ export async function resolveTranscriptProvenance(
     if (!file) return unmapped("source-unknown");
     const lines = readLines(record, file);
     if (!lines) return unmapped("stale-source");
-    files.set(file.uri, file.sourceText);
     regions.push(
       ...mapRenderedRegion(snapshot, {
         ...file,
         kind: "verified-file" as const,
-        codeRegionId: "read:" + record.toolCallId,
         origin: "structured-read" as const,
         lines,
       }),
@@ -412,7 +397,6 @@ export async function resolveTranscriptProvenance(
           codeLines.some((line, i) => disk[binding.startLine + i] !== line)
         )
           return unmapped("stale-source");
-        files.set(file.uri, file.sourceText);
         regions.push(
           ...placements.map((region) => ({
             ...region,
@@ -432,7 +416,6 @@ export async function resolveTranscriptProvenance(
           fs,
         });
         if (binding && binding.kind !== "unmapped") {
-          files.set(binding.file.uri, binding.file.sourceText);
           const sourceRow = <T extends SourceLine>(row: T) => ({
             ...row,
             sourceLine: row.sourceLine + binding.sourceLine,
@@ -451,20 +434,11 @@ export async function resolveTranscriptProvenance(
         } else {
           const languageId = LANGUAGES.get(block.language.toLowerCase());
           if (!languageId) continue;
-          if (!allowVirtual) return unmapped("virtual-document-unsupported");
           regions.push(
             ...placements.map((region) => ({
               ...region,
-              kind: "virtual-document" as const,
+              kind: "workspace-symbol-query" as const,
               languageId,
-              uri:
-                "untitled://pi-intellisense/" +
-                encodeURIComponent(snapshot.sessionId) +
-                "/" +
-                encodeURIComponent(block.id),
-              text: block.code,
-              readOnly: true,
-              origin: "fence" as const,
             })),
           );
         }
@@ -476,13 +450,6 @@ export async function resolveTranscriptProvenance(
   );
   if (hits.length > 1) return unmapped("ambiguous");
   if (!hits.length) return unmapped("wrapped-unmappable");
-  const anchor = await resolveTranscriptSymbol({
-    snapshot,
-    regions: hits,
-    source: {
-      readFile: async (uri) =>
-        files.get(uri) ?? fs.readFile(fileURLToPath(uri), "utf8"),
-    },
-  });
+  const anchor = resolveTranscriptSymbol({ snapshot, regions: hits });
   return anchor ?? unmapped("cursor-not-symbol");
 }
