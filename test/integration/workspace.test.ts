@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   mkdtemp,
   mkdir,
@@ -68,10 +69,22 @@ function entryHarness(cwd: string) {
         (factory, options) =>
           new Promise((resolve) => {
             const component = mountComponent(factory, resolve);
-            overlays.push({
-              options,
-              text: stripAnsi(component.render(120).join("\n")),
-            });
+            assert.equal(options?.overlay, true);
+            const overlayOptions = options?.overlayOptions;
+            assert.ok(typeof overlayOptions === "function");
+            const layout = overlayOptions();
+            assert.equal(typeof layout.width, "number");
+            const width = Number(layout.width);
+            const rows = component.render(width).map(stripAnsi);
+            assert.ok(
+              rows.every(
+                (row) =>
+                  visibleWidth(row) === width &&
+                  row.startsWith(" ") &&
+                  row.endsWith(" "),
+              ),
+            );
+            overlays.push({ options, text: rows.join("\n") });
             component.handleInput("\x1b");
           }),
       ),

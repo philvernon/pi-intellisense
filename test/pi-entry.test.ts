@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -70,10 +71,22 @@ function harness(root: string) {
       custom: customUI((factory, options) => {
         return new Promise((resolve) => {
           const component = mountComponent(factory, resolve);
-          overlays.push({
-            options,
-            text: stripAnsi(component.render(300).join("\n")),
-          });
+          assert.equal(options?.overlay, true);
+          const overlayOptions = options?.overlayOptions;
+          assert.ok(typeof overlayOptions === "function");
+          const layout = overlayOptions();
+          assert.equal(typeof layout.width, "number");
+          const width = Number(layout.width);
+          const rows = component.render(width).map(stripAnsi);
+          assert.ok(
+            rows.every(
+              (row) =>
+                visibleWidth(row) === width &&
+                row.startsWith(" ") &&
+                row.endsWith(" "),
+            ),
+          );
+          overlays.push({ options, text: rows.join("\n") });
           component.handleInput("\x1b");
         });
       }),
@@ -338,7 +351,10 @@ test("registered references picker uses canonical workspace-relative labels", ()
       assert.deepEqual(h.notices, []);
       assert.equal(h.overlays.length, 1);
       assert.equal(
-        h.overlays[0].text,
+        h.overlays[0].text
+          .split("\n")
+          .map((row) => row.slice(1).trimEnd())
+          .join("\n"),
         "Choose references location\n> a.ts:2:13\n  c.ts:2:13",
       );
     } finally {

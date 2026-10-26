@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { visibleWidth, type OverlayOptions } from "@earendil-works/pi-tui";
 import { stripAnsi } from "../../src/positions.ts";
-import type { NativeUI } from "../../src/native/inline-hover.ts";
+import type { NativeUI } from "../../src/native/popup.ts";
 import { transcriptSnapshot } from "../helpers.ts";
 import {
   customUI,

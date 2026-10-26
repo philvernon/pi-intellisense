@@ -1,13 +1,14 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeLocations, normalizeHover } from "../lsp/normalize.ts";
-import { showInlineHover, type NativeUI } from "./inline-hover.ts";
+import { showInlineHover } from "./inline-hover.ts";
+import { showPopup, type NativeUI } from "./popup.ts";
 import type { Snapshot, IntelliSenseAction } from "../bridge/register.ts";
 import type {
   SourceAnchor,
   WorkspaceSymbolQuery,
 } from "./transcript-source.ts";
-import { placeHoverOverlay, type OverlayGeometry } from "./overlay-geometry.ts";
+import type { OverlayGeometry } from "./overlay-geometry.ts";
 import {
   truncateToWidth,
   visibleWidth,
@@ -110,77 +111,52 @@ export function createNativeTranscriptController({
     signal: AbortSignal,
   ): Promise<T | null | undefined> {
     if (locations.length === 1) return locations[0];
-    const options = placeHoverOverlay({
-      anchor: snapshot.screenCursor!,
-      tooltip: { width: 64, height: Math.min(14, locations.length + 1) },
-      terminal: geometry?.terminal ?? {
-        rows: process.stdout.rows || 42,
-        cols: process.stdout.columns || 120,
-      },
-      protectedRows: geometry?.protectedRows ?? { top: 1, bottom: 5 },
-    });
-    let dismissPicker: (() => void) | undefined;
-    const cancelPicker = () => dismissPicker?.();
-    signal.addEventListener("abort", cancelPicker, { once: true });
     const showPicker = () =>
-      ui.custom<T | null>(
-        (tui, theme, _keys, done) => {
-          dismissPicker = () => done(null);
-          if (signal.aborted) dismissPicker();
+      showPopup<T | null>({
+        ui,
+        snapshot,
+        signal,
+        geometry,
+        title: "Choose " + action + " location",
+        cancelledValue: null,
+        onReturnToEditor: () => requestEditorFocus?.(snapshot),
+        createContent(theme, done) {
           let focus = 0;
+          function renderLocations(
+            width: number,
+            start: number,
+            end: number,
+          ): string[] {
+            return locations
+              .slice(start, end)
+              .map((location, i) =>
+                theme.fg(
+                  i + start === focus ? "accent" : "text",
+                  (i + start === focus ? "> " : "  ") +
+                    locationLabel(location, workspaceRoot, width - 2),
+                ),
+              );
+          }
           return {
-            render(width: number) {
-              const visibleRows = Math.max(1, options.maxHeight - 1);
-              const start = Math.max(0, focus - visibleRows + 1);
-              const heading =
-                options.maxHeight > 1
-                  ? [
-                      truncateToWidth(
-                        theme.fg("accent", "Choose " + action + " location"),
-                        width,
-                      ),
-                    ]
-                  : [];
-              return [
-                ...heading,
-                ...locations.slice(start, start + visibleRows).map((x, i) => {
-                  const selected = i + start === focus;
-                  return truncateToWidth(
-                    theme.fg(
-                      selected ? "accent" : "text",
-                      (selected ? "> " : "  ") +
-                        locationLabel(x, workspaceRoot, width - 2),
-                    ),
-                    width,
-                  );
-                }),
-              ];
+            renderLines: (width) => renderLocations(width, 0, locations.length),
+            renderViewport(width, height) {
+              const start = Math.max(0, focus - height + 1);
+              return renderLocations(width, start, start + height);
             },
-            handleInput(key: string) {
-              if (matchesKey(key, Key.escape)) done(null);
-              else if (matchesKey(key, Key.tab)) {
-                done(null);
-                requestEditorFocus?.(snapshot);
-              } else if (key === "j" || key === "\x1b[B") {
+            handleInput(key) {
+              if (key === "j" || matchesKey(key, Key.down))
                 focus = Math.min(locations.length - 1, focus + 1);
-                tui.requestRender?.();
-              } else if (key === "k" || key === "\x1b[A") {
+              else if (key === "k" || matchesKey(key, Key.up))
                 focus = Math.max(0, focus - 1);
-                tui.requestRender?.();
-              } else if (matchesKey(key, Key.enter)) done(locations[focus]);
+              else if (matchesKey(key, Key.enter)) done(locations[focus]!);
             },
             invalidate() {},
           };
         },
-        { overlay: true, overlayOptions: options },
-      );
-    try {
-      return await (snapshot.withNavigationPicker
-        ? snapshot.withNavigationPicker(showPicker)
-        : showPicker());
-    } finally {
-      signal.removeEventListener("abort", cancelPicker);
-    }
+      });
+    return snapshot.withNavigationPicker
+      ? snapshot.withNavigationPicker(showPicker)
+      : showPicker();
   }
   async function invoke(action: IntelliSenseAction, snapshot: Snapshot) {
     if (!current(snapshot)) return;
@@ -269,13 +245,7 @@ export function createNativeTranscriptController({
           signal,
           markup,
           onReturnToEditor: () => requestEditorFocus?.(snapshot),
-          geometry: geometry ?? {
-            terminal: {
-              rows: process.stdout.rows || 42,
-              cols: process.stdout.columns || 120,
-            },
-            protectedRows: { top: 1, bottom: 5 },
-          },
+          geometry,
         });
         return;
       }

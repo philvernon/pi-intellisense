@@ -336,6 +336,125 @@ test("multi-result picker scrolls beyond twelve locations and displays no termin
   controller.dispose();
 });
 
+for (const action of ["definition", "references"] as const) {
+  for (const key of ["\r", "\x1b", "\t"]) {
+    test(`${action} picker shares popup background and padding with selection/cancellation ${JSON.stringify(key)}`, async () => {
+      const { createNativeTranscriptController } = await native();
+      const locations = [
+        { uri: "file:///project/src/first.ts", line: 1, character: 2 },
+        {
+          uri: "file:///project/src/second%20target.ts",
+          line: 3,
+          character: 4,
+        },
+      ];
+      const f = fixture();
+      f.snapshot.screenCursor = { row: 2, col: 3 };
+      f.lsp.query = async (request) => {
+        f.seen.lsp.push(request);
+        return locations.map(({ uri, line, character }) => ({
+          uri,
+          range: {
+            start: { line, character },
+            end: { line, character: character + 1 },
+          },
+        }));
+      };
+      let customCalls = 0;
+      let editorFocus = 0;
+      const validated: NavigationLocation[] = [];
+      f.requestEditorFocus = () => editorFocus++;
+      f.validateTarget = async (location) => {
+        validated.push(location);
+        return location;
+      };
+      f.ui.custom = customUI(
+        (factory, options) =>
+          new Promise((done) => {
+            customCalls++;
+            const terminal = { rows: 12, columns: 80 };
+            const backgrounds: string[] = [];
+            const component = mountComponent(factory, done, {
+              terminal,
+              theme: {
+                getBgAnsi(token) {
+                  assert.equal(token, "customMessageBg");
+                  return "";
+                },
+                bg(token, text) {
+                  assert.equal(token, "customMessageBg");
+                  backgrounds.push(text);
+                  return text;
+                },
+              },
+            });
+            assert.equal(options?.overlay, true);
+            const overlayOptions = options?.overlayOptions;
+            assert.ok(typeof overlayOptions === "function");
+            const layout = overlayOptions();
+            const width =
+              Math.max(
+                `Choose ${action} location`.length,
+                "> src/second target.ts:4:5".length,
+              ) + 2;
+            assert.equal(layout.width, width);
+            assert.equal(layout.row, 3);
+            assert.equal(layout.maxHeight, 3);
+            const rows = component.render(width);
+            assert.deepEqual(backgrounds, rows);
+            assert.deepEqual(
+              rows.map((line) => line.slice(1).trimEnd()),
+              [
+                `Choose ${action} location`,
+                "> src/first.ts:2:3",
+                "  src/second target.ts:4:5",
+              ],
+            );
+            assert.ok(
+              rows.every(
+                (line) =>
+                  visibleWidth(line) === width &&
+                  line.startsWith(" ") &&
+                  line.endsWith(" "),
+              ),
+            );
+            component.handleInput("j");
+            terminal.rows = 7;
+            terminal.columns = 24;
+            const resized = overlayOptions();
+            assert.equal(resized.maxHeight, 1);
+            assert.ok(Number(resized.width) <= terminal.columns);
+            const compact = component.render(Number(resized.width));
+            assert.equal(compact.length, 1);
+            assert.match(compact[0], /^ > /);
+            assert.doesNotMatch(compact[0], /Choose/);
+            terminal.rows = 12;
+            terminal.columns = 80;
+            const restored = overlayOptions();
+            assert.equal(restored.width, width);
+            assert.match(
+              component.render(width)[2].slice(1).trimEnd(),
+              /^> src\/second target\.ts:4:5$/,
+            );
+            component.handleInput(key);
+          }),
+      );
+      const controller = createNativeTranscriptController(f);
+      await controller.invoke(action, f.snapshot);
+      assert.equal(customCalls, 1);
+      assert.deepEqual(
+        f.seen.lsp.map((request) => request.kind),
+        [action],
+      );
+      assert.deepEqual(validated, key === "\r" ? [locations[1]] : []);
+      assert.deepEqual(f.seen.opened, key === "\r" ? [locations[1]] : []);
+      assert.equal(editorFocus, key === "\t" ? 1 : 0);
+      assert.deepEqual(f.seen.notifications, []);
+      controller.dispose();
+    });
+  }
+}
+
 for (const { rows, row, height } of [
   { rows: 12, row: 3, height: 4 },
   { rows: 7, row: 1, height: 1 },
@@ -360,15 +479,34 @@ for (const { rows, row, height } of [
     f.ui.custom = customUI(
       (factory, options) =>
         new Promise((done) => {
-          const layout = options?.overlayOptions;
-          assert.ok(layout && typeof layout !== "function");
+          const terminal = { rows, columns: 80 };
+          const component = mountComponent(factory, done, { terminal });
+          const overlayOptions = options?.overlayOptions;
+          assert.equal(options?.overlay, true);
+          assert.ok(typeof overlayOptions === "function");
+          const layout = overlayOptions();
           assert.equal(layout.row, row);
           assert.equal(layout.col, 3);
           assert.equal(layout.maxHeight, height);
-          const component = mountComponent(factory, done);
+          assert.equal(typeof layout.width, "number");
+          const width = Number(layout.width);
           for (let i = 0; i < locations.length; i++) {
-            const rendered = component.render(64);
+            const rendered = component.render(width);
             assert.equal(rendered.length, height);
+            assert.ok(
+              rendered.every(
+                (line) =>
+                  visibleWidth(line) === width &&
+                  line.startsWith(" ") &&
+                  line.endsWith(" "),
+              ),
+            );
+            assert.equal(
+              rendered.some((line) =>
+                line.includes("Choose references location"),
+              ),
+              height > 1,
+            );
             assert.match(
               rendered.join("\n"),
               new RegExp("> .*target" + i + "\\.ts:"),
@@ -410,7 +548,7 @@ for (const width of [64, 32]) {
           component.handleInput("j");
           component.handleInput("j");
           assert.match(
-            component.render(width)[3],
+            component.render(width)[3].slice(1).trimEnd(),
             /^> .*target #\?\.ts:123:46$/,
           );
           component.handleInput("\r");
@@ -425,15 +563,24 @@ for (const width of [64, 32]) {
       },
     });
     await controller.invoke("references", f.snapshot);
-    assert.deepEqual(rows.slice(1, 3), [
-      "> src/one dir/shared #?.ts:1:3",
-      "  src/two dir/shared #?.ts:2:3",
-    ]);
-    assert.match(
-      rows[3],
-      /^  …\/(?:long-directory\/)*feature\/target #\?\.ts:123:46$/,
+    assert.deepEqual(
+      rows.slice(1, 3).map((row) => row.slice(1).trimEnd()),
+      ["> src/one dir/shared #?.ts:1:3", "  src/two dir/shared #?.ts:2:3"],
     );
-    assert.ok(rows.every((row) => visibleWidth(row) <= width));
+    assert.match(
+      rows[3].slice(1).trimEnd(),
+      width === 32
+        ? /^  …\/target #\?\.ts:123:46$/
+        : /^  …\/(?:long-directory\/)*feature\/target #\?\.ts:123:46$/,
+    );
+    assert.ok(
+      rows.every(
+        (row) =>
+          visibleWidth(row) === width &&
+          row.startsWith(" ") &&
+          row.endsWith(" "),
+      ),
+    );
     assert.doesNotMatch(rows.join("\n"), /file:|\/project|%20|%23|%3F/);
     const selected = { uri: locations[2].uri, line: 122, character: 45 };
     assert.deepEqual(validated, [selected]);
@@ -481,12 +628,15 @@ test("picker safely displays malformed/non-file URIs and sanitizes decoded termi
     },
   });
   await controller.invoke("definition", f.snapshot);
-  assert.deepEqual(rows.slice(1), [
-    "> file:///project/bad%ZZ.ts:1:1",
-    "  https://example.test/remote%20file.ts:1:1",
-    "  safe.ts:1:1",
-    "  ../elsewhere/outside.ts:1:1",
-  ]);
+  assert.deepEqual(
+    rows.slice(1).map((row) => row.slice(1).trimEnd()),
+    [
+      "> file:///project/bad%ZZ.ts:1:1",
+      "  https://example.test/remote%20file.ts:1:1",
+      "  safe.ts:1:1",
+      "  ../elsewhere/outside.ts:1:1",
+    ],
+  );
   assert.doesNotMatch(rows.join(""), /[\x00-\x1f\x7f-\x9f]/u);
   assert.deepEqual(validated, [{ uri: uris[0], line: 0, character: 0 }]);
   assert.deepEqual(f.seen.opened, []);
@@ -685,10 +835,13 @@ test("ambiguous workspace symbols use the existing location picker", async () =>
     (factory) =>
       new Promise((done) => {
         const component = mountComponent(factory, done);
-        assert.deepEqual(component.render(64).slice(1), [
-          "> src/target1.ts:2:4",
-          "  src/target2.ts:3:4",
-        ]);
+        assert.deepEqual(
+          component
+            .render(64)
+            .slice(1)
+            .map((row) => row.slice(1).trimEnd()),
+          ["> src/target1.ts:2:4", "  src/target2.ts:3:4"],
+        );
         component.handleInput("j");
         component.handleInput("\r");
       }),
