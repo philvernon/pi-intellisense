@@ -1,302 +1,148 @@
-import type {ExtensionAPI, ExtensionContext} from "@earendil-works/pi-coding-agent";
+import type {ExtensionAPI} from "@earendil-works/pi-coding-agent";
 import {promises as fs} from "node:fs";
 import {createHash} from "node:crypto";
 import {homedir} from "node:os";
 import path from "node:path";
-import {fileURLToPath,pathToFileURL} from "node:url";
-import {extractFencedBlocks} from "./blocks.mjs";
-import {resolveSourceAnchor} from "./provenance.mjs";
-import {resolveSourceAtCursor} from "./provenance/source-map.ts";
+import {fileURLToPath} from "node:url";
+import {hideSourceAnnotations} from "./blocks.mjs";
 import {createLspManager} from "./runtime.mjs";
 import {registerTabFocusIntelliSense} from "./bridge/register.ts";
-import {normalizeLocations,validateFileLocation,within} from "./locations.mjs";
-import {stripAnsi} from "./positions.mjs";
-import {openInNeovim} from "./neovim.mjs";
-import {connectNeovim} from "./neovim-rpc.mjs";
-import {openCodePane} from "./ui/code-pane.ts";
+import {validateFileLocation,within} from "./locations.mjs";
+import {createNeovimNavigator} from "./neovim-launcher.mjs";
 import {createNativeTranscriptController} from "./native/native-controller.ts";
 import {resolveTranscriptProvenance} from "./native/provenance-resolver.mjs";
+import {symbolAtLine} from "./native/transcript-source.ts";
+import {stripAnsi} from "./positions.mjs";
 import {createProvider} from "./providers/index.mjs";
 
-const SHA=(s:string)=>createHash("sha256").update(s).digest("hex");
-const MAX_FILE=250_000;
+const SHA=(text:string)=>createHash("sha256").update(text).digest("hex");
 const DEFAULT_CONFIG={timeoutMs:5000,servers:{},nvimSocket:"env:NVIM",provider:"standalone"};
-type AnyCtx=ExtensionContext & {sessionManager:any};
-function textParts(message:any):string[] {
-  const value=message?.content;
-  if(typeof value==="string")return [value];
-  if(!Array.isArray(value))return [];
-  return value.filter(p=>p&&p.type==="text"&&typeof p.text==="string").map(p=>p.text);
-}
-function chatBlocks(ctx:AnyCtx) {
-  const entries=ctx.sessionManager.getBranch()??[];
-  const blocks:any[]=[];
-  const readCalls=new Map<string,string>();
-  for(let index=0;index<entries.length;index++){
-    const entry=entries[index],message=entry?.message;
-    if(entry?.type!=="message"||!message)continue;
-    // Only structured, persisted read-tool arguments can suggest a candidate path.
-    // A path remains untrusted until exact bytes are verified against the file.
-    if(message.role==="assistant"&&Array.isArray(message.content)){
-      for(const part of message.content) {
-        if(part?.type==="toolCall"&&part.name==="read"&&typeof part.id==="string") {
-          const proposed=part.arguments?.path;
-          if(typeof proposed==="string")readCalls.set(part.id,proposed);
-        }
-      }
-    }
-    if(message.role==="toolResult"&&message.toolName==="read"&&!message.isError){
-      const hint=readCalls.get(message.toolCallId);
-      if(hint){
-        for(const original of textParts(message)){
-          if(!original.trim()||original.length>250_000)continue;
-          const lines=original.replace(/\r\n/gu,"\n").split("\n");
-          const labeled=lines.map(x=>/^\s*(\d+)(?::|\s*[│|])\s?(.*)$/u.exec(x));
-          const found=labeled.filter(Boolean);
-          let code=original;
-          if(found.length>0&&found.length>=lines.filter(x=>x.trim()).length-1){
-            // Reconstruct only consecutively numbered content. Ignore wrappers.
-            const nums=found.map(x=>Number(x![1]));
-            if(nums.every((n,i)=>i===0||n===nums[i-1]+1))
-              code=found.map(x=>x![2]).join("\n")+"\n";
-          }
-          if(!code.trim())continue;
-          blocks.push({id:"read:"+String(entry.id??index),messageId:entry.id??String(index),
-            origin:"toolResult",language:path.extname(hint).slice(1),code,
-            candidatePath:hint});
-          if(blocks.length>=200)return blocks;
-        }
-        continue;
-      }
-    }
-    for(const content of textParts(message)){
-      for(const block of extractFencedBlocks(content,{messageId:entry.id??String(index),origin:message.role??"unknown"})){
-        blocks.push(block);
-        if(blocks.length>=200)return blocks;
-      }
-    }
-  }
-  return blocks;
-}
-async function configFromDisk() {
-  const pathName=path.join(homedir(),".pi","agent","pi-intellisense.json");
-  try {
-    const text=await fs.readFile(pathName,"utf8");
-    const data=JSON.parse(text);
+
+function agentDirectory(){return process.env.PI_CODING_AGENT_DIR??path.join(homedir(),".pi","agent");}
+async function configFromDisk(){
+  try{
+    const data=JSON.parse(await fs.readFile(path.join(agentDirectory(),"pi-intellisense.json"),"utf8"));
     if(!data||typeof data!=="object")return DEFAULT_CONFIG;
-    const servers:Record<string,any>={};
-    for(const [lang,server] of Object.entries(data.servers??{})){
-      if(server&&typeof (server as any).command==="string"&&Array.isArray((server as any).args)&&
-        (server as any).args.every((a:any)=>typeof a==="string"))
-        servers[lang]=server;
+    const servers:Record<string,{command:string;args:string[]}>={};
+    for(const [language,server] of Object.entries(data.servers??{})){
+      const value=server as any;
+      if(value&&typeof value.command==="string"&&Array.isArray(value.args)&&value.args.every((arg:any)=>typeof arg==="string"))
+        servers[language]=value;
     }
-    return {...DEFAULT_CONFIG,timeoutMs:Number.isInteger(data.timeoutMs)&&data.timeoutMs>0?data.timeoutMs:5000,
+    return {...DEFAULT_CONFIG,servers,
+      timeoutMs:Number.isInteger(data.timeoutMs)&&data.timeoutMs>0?data.timeoutMs:5000,
       nvimSocket:typeof data.nvimSocket==="string"?data.nvimSocket:"env:NVIM",
       provider:data.provider==="pi-lens-mcp"?"pi-lens-mcp":"standalone",
-      piLensServer:typeof data.piLensServer==="string"&&path.isAbsolute(data.piLensServer)?data.piLensServer:undefined,
-      servers};
-  } catch{return DEFAULT_CONFIG;}
+      piLensServer:typeof data.piLensServer==="string"&&path.isAbsolute(data.piLensServer)?data.piLensServer:undefined};
+  }catch{return DEFAULT_CONFIG;}
 }
-function configuredSocket(config:any):string|undefined {
-  const configured=config.nvimSocket==="env:NVIM"?(process.env.PI_INTELLISENSE_NVIM??process.env.NVIM):config.nvimSocket;
-  return configured&&path.isAbsolute(configured)?configured:undefined;
-}
-function sessionId(ctx:AnyCtx):string {
-  return String(ctx.sessionManager.getSessionId?.()??ctx.sessionManager.getSessionFile?.()??"pi-session");
-}
-function rootFor(ctx:AnyCtx):string {return path.resolve(ctx.cwd);}
-function usefulLabel(block:any,index:number){
-  const head=block.code.split("\n").find((x:string)=>x.trim())?.trim().slice(0,65)??"(empty)";
-  return String(index+1).padStart(3)+"  "+(block.language||"text")+"  "+head;
-}
-async function anchoredFile(root:string,requested:string){
-  const candidate=path.resolve(root,requested);
-  if(!within(root,candidate))throw new Error("Path outside current project");
-  const canonical=await fs.realpath(candidate);
-  if(!within(root,canonical))throw new Error("File resolves outside current project");
-  const stat=await fs.stat(canonical);
-  if(!stat.isFile()||stat.size>MAX_FILE)throw new Error("File missing or too large for IntelliSense");
-  const code=await fs.readFile(canonical,"utf8");
-  return {block:{id:canonical,code,language:path.extname(canonical).slice(1)},
-    anchor:{kind:"disk-verified",path:canonical,sourceHash:SHA(code),startLine:0,startCharacter:0}};
+function configuredSocket(config:any){
+  if(config.nvimSocket==="auto")return undefined;
+  const socket=config.nvimSocket==="env:NVIM"?(process.env.PI_INTELLISENSE_NVIM??process.env.NVIM):config.nvimSocket;
+  return socket&&path.isAbsolute(socket)?socket:undefined;
 }
 
-async function showText(ctx:AnyCtx,title:string,body:string) {
-  await ctx.ui.custom((tui:any,theme:any,keys:any,done:(v:any)=>void)=>{
-    const safe=stripAnsi(body).replace(/[\x00-\x08\x0b-\x1f\x7f]/gu,"").split("\n");
-    let off=0;
-    return {
-      render(width:number){
-        const trim=(s:string)=>s.slice(0,Math.max(1,width));
-        return [theme.fg("accent",trim(title+" · j/k scroll · Esc close")),
-          ...safe.slice(off,off+Math.min(16,(process.stdout.rows||30)-8)).map(trim)];
-      },
-      handleInput(input:string){
-        if(input==="\x1b"||input==="q"){done(undefined);return;}
-        if(input==="j"||input==="\x1b[B")off=Math.min(Math.max(0,safe.length-10),off+1);
-        if(input==="k"||input==="\x1b[A")off=Math.max(0,off-1);
-        tui.requestRender();
-      },
-      invalidate(){}
-    };
-  });
-}
 export default function piIntelliSense(pi:ExtensionAPI){
-  let active:AnyCtx|undefined;
-  let config:any=DEFAULT_CONFIG,manager:ReturnType<typeof createLspManager>|undefined;
-  let unregister:undefined|(()=>void);
-  let nativeController: ReturnType<typeof createNativeTranscriptController>|undefined;
-  let latestNativeRevision = "";
-  let provider:any;
-  let providerKind:string|undefined;
-  const diagnostics:Record<string,any[]>={};
-
-  async function ensureRuntime(ctx:AnyCtx) {
-    config=await configFromDisk();
-    manager??=createLspManager({cwd:rootFor(ctx),config,
-      onNotification:(method:string,params:any)=>{
-        if(method==="textDocument/publishDiagnostics"&&params?.uri)
-          diagnostics[params.uri]=params.diagnostics??[];
-      }});
-    return manager;
-  }
-  async function destination(ctx:AnyCtx,location:any){
-    const root=rootFor(ctx);
-    const target=await validateFileLocation(location,{root});
-    const socket=configuredSocket(config);
-    if(!socket)throw new Error("No Neovim socket. Start nvim --listen /tmp/nvim-intel.sock and set PI_INTELLISENSE_NVIM.");
-    const rpc=await connectNeovim(socket);
-    try{await openInNeovim({location:{...target,encoding:"utf-16"},socket,rpc,fs});}
-    finally{rpc.close();}
-  }
-  async function bridgeAction(operation:string,snapshot:any) {
-    if(!active || !nativeController || active.mode!=="tui") return;
-    latestNativeRevision = String(snapshot.transcriptRevision??"");
-    await nativeController.invoke(operation,snapshot);
-  }
-  pi.on("session_start",(_event,ctx)=>{
-    active=ctx as AnyCtx;
-    const sid=sessionId(active);
-    nativeController?.dispose();
-    provider?.close?.();provider=undefined;providerKind=undefined;
-    nativeController=createNativeTranscriptController({
-      ui:ctx.ui,
-      requestEditorFocus:()=>pi.events.emit("pi-intellisense:return-to-editor:v1",{sessionId:sid}),
-      getSession:()=>({sessionId:sid,transcriptRevision:latestNativeRevision}),
-      resolveSymbol:(snapshot:any)=>resolveTranscriptProvenance(snapshot,{
-        root:rootFor(ctx),entries:ctx.sessionManager.getBranch?.()??[]
-      }),
-      lsp:{query:async(request:any)=>{
-        const settings=await configFromDisk();
-        const kind=settings.provider==="pi-lens-mcp"?"pi-lens-mcp":"standalone";
-        if(!provider||providerKind!==kind){
-          await provider?.close?.();
-          providerKind=kind;
-          provider=createProvider({
-            kind,cwd:rootFor(ctx),
-            piLensServer:settings.piLensServer??path.join(homedir(),".pi","agent","npm","node_modules","pi-lens","dist","mcp","server.js"),
-            standaloneQuery:async(q:any)=>{
-              if(q.source?.kind==="virtual-document"){
-                const lang=q.source.languageId;
-                const ext=lang.startsWith("typescript")?".ts":
-                  lang.startsWith("javascript")?".js":
-                  lang==="python"?".py":lang==="rust"?".rs":
-                  lang==="go"?".go":lang==="lua"?".lua":null;
-                if(!ext)throw new Error("Virtual document language not supported: "+lang);
-                const file=path.join(rootFor(ctx),".pi-intellisense-virtual",SHA(q.source.text)+ext);
-                const uri=pathToFileURL(file).href;
-                const client=await (await ensureRuntime(ctx)).get(file,q.source.text,{uri,languageId:lang});
-                return client.query({...q,uri});
-              }
-              const file=fileURLToPath(q.uri);
-              if(!within(rootFor(ctx),file))throw new Error("Source outside workspace");
-              const code=await fs.readFile(file,"utf8");
-              if(q.source?.fileHash&&SHA(code)!==q.source.fileHash)
-                throw new Error("Source changed since transcript was rendered; hover/navigation cancelled");
-              const client=await (await ensureRuntime(ctx)).get(file,code);
-              return client.query(q);
-            }
-          });
-        }
-        return provider.query(request);
-      }},
-      validateSource:async(source:any)=>{
-        if(source?.kind==="virtual-document")return true;
-        if(!source?.fileHash||typeof source.uri!=="string"||!source.uri.startsWith("file://"))return false;
-        const file=fileURLToPath(source.uri);
-        if(!within(rootFor(ctx),file))return false;
-        return SHA(await fs.readFile(file,"utf8").catch(()=>""))===source.fileHash;
-      },
-      neovim:{open:async(location:any)=>{
-        await ensureRuntime(ctx);
-        return destination(ctx,{uri:location.uri,
-          selectionRange:{start:{line:location.line,character:location.character}}});
-      }},
-      validateTarget:async(location:any)=>{
-        const confirmed=await validateFileLocation({uri:location.uri,
-          selectionRange:{start:{line:location.line,character:location.character}}}, {root:rootFor(ctx)});
-        return {uri:location.uri,line:confirmed.line,character:confirmed.character};
-      }
-    });
-    const bus={
-      on:(name:string,handler:(value:any)=>void)=>{
-        const result=(pi.events as any).on(name,handler);
-        return typeof result==="function"?result:()=>{(pi.events as any).off?.(name,handler);};
-      },
-      emit:(name:string,value:any)=>(pi.events as any).emit(name,value)
+  let disposeSession:undefined|(()=>Promise<void>);
+  pi.registerMarkdownTransformer((markdown,context)=>context.messageType==="assistant"?hideSourceAnnotations(markdown):markdown);
+  pi.on("before_agent_start",event=>{
+    event.systemPromptOptions.sections.intellisense_sources=[
+      "Use ordinary language fences for code. IntelliSense uses the current workspace's language server automatically; no source annotations or prior file reads are required."
+    ].join("\n");
+  });
+  pi.on("session_start",async(_event,ctx)=>{
+    await disposeSession?.();
+    const root=await fs.realpath(ctx.cwd);
+    const sessionId=String(ctx.sessionManager.getSessionId?.()??ctx.sessionManager.getSessionFile?.()??"pi-session");
+    const config=await configFromDisk();
+    const navigator=createNeovimNavigator({cwd:root,timeoutMs:config.timeoutMs});
+    let manager:ReturnType<typeof createLspManager>|undefined,provider:any;
+    let transcriptRevision="",disposed=false;
+    const runtime=()=>manager??=createLspManager({cwd:root,config});
+    const query=async(request:any)=>{
+      if(!provider)provider=createProvider({kind:config.provider,cwd:root,
+        piLensServer:(config as any).piLensServer??path.join(agentDirectory(),"npm","node_modules","pi-lens","dist","mcp","server.js"),
+        standaloneQuery:async(q:any)=>{
+          const file=fileURLToPath(q.uri);
+          if(!within(root,file))throw new Error("Source outside workspace");
+          const text=await fs.readFile(file,"utf8");
+          if(SHA(text)!==q.source.fileHash)throw new Error("Source changed since mapping; retry hover/navigation");
+          return (await runtime().get(file,text,{signal:q.signal})).query(q);
+        }});
+      return provider.query(request);
     };
-    const registration=registerTabFocusIntelliSense({events:bus,sessionId:sid,onAction:bridgeAction});
-    unregister=()=>registration.dispose();
-  });
-  pi.on("session_shutdown",async()=>{
-    unregister?.();unregister=undefined;
-    nativeController?.dispose();nativeController=undefined;latestNativeRevision="";active=undefined;
-    await provider?.close?.();provider=undefined;providerKind=undefined;
-    await manager?.close();manager=undefined;
-    for(const key of Object.keys(diagnostics))delete diagnostics[key];
-  });
-  pi.registerCommand("intel",{
-    description:"Open read-only code navigation with LSP hover (K), definitions (gd) and Neovim jump",
-    handler:async(args,ctx)=>{
-      if(ctx.mode!=="tui"){ctx.ui.notify("IntelliSense requires Pi TUI mode","warning");return;}
-      const projectRoot=rootFor(ctx as AnyCtx);
-      let block:any,anchor:any;
-      try {
-        if(args?.trim()){
-          const result=await anchoredFile(projectRoot,args.trim());
-          block=result.block;anchor=result.anchor;
-        }else{
-          const blocks=chatBlocks(ctx as AnyCtx);
-          if(!blocks.length){ctx.ui.notify("No finalized code fences in active session. Use /intel <file>.","info");return;}
-          const labels=blocks.map(usefulLabel);
-          const selected=await ctx.ui.select("Select a code block for IntelliSense",labels);
-          if(selected===undefined)return;
-          const index=labels.indexOf(selected);
-          if(index<0)return;
-          block=blocks[index];
-          if(block.candidatePath) {
-            const detected=await resolveSourceAnchor({
-              block,root:projectRoot,candidate:{kind:"selected-file",path:block.candidatePath},fs
-            });
-            if(detected.kind==="disk-verified")anchor={...detected,startCharacter:detected.startCharacter??0};
-          }
-          if(!anchor){
-            const bind=await ctx.ui.input("Source file path for this snippet (optional; Esc to skip)");
-            if(bind?.trim()){
-              const result=await resolveSourceAnchor({
-                block,root:projectRoot,candidate:{kind:"selected-file",path:bind.trim()},fs
-              });
-              if(result.kind==="disk-verified")anchor={...result,startCharacter:result.startCharacter??0};
-              else ctx.ui.notify(result.kind==="ambiguous"?
-                "Snippet occurs multiple times. Open file directly with /intel <file>.":
-                "Snippet not identical to file. LSP disabled for this block.","warning");
+    const controller=createNativeTranscriptController({
+      ui:ctx.ui,
+      requestEditorFocus:()=>pi.events.emit("pi-intellisense:return-to-editor:v1",{sessionId}),
+      getSession:()=>({sessionId,transcriptRevision}),
+      resolveSymbol:async(snapshot:any)=>{
+        const source=await resolveTranscriptProvenance(snapshot,{root,entries:ctx.sessionManager.getBranch()});
+        if(source.kind!=="unmapped"||!["source-unknown","wrapped-unmappable","ambiguous"].includes(source.reason))return source;
+        const row=snapshot.visualCursor?.row-snapshot.renderedStartRow;
+        const text=stripAnsi(snapshot.renderedLines?.[row]??"");
+        const symbol=symbolAtLine(text,text,snapshot.visualCursor?.col);
+        return symbol?{kind:"workspace-symbol-query",token:symbol.token}:source;
+      },
+      findWorkspaceSymbols:async(source:any,{signal}:any)=>{
+        const symbols=await runtime().workspaceSymbols({query:source.token,languageId:source.languageId,signal});
+        const matches=new Map(),files=new Map<string,Promise<{text:string;fileHash:string}>>(),documents=new Map<string,Promise<any[]>>();
+        const compare=(a:any,b:any)=>a.line-b.line||a.character-b.character;
+        const flatten=(symbols:any[]):any[]=>symbols.flatMap(symbol=>[symbol,...flatten(symbol.children??[])]);
+        for(const symbol of symbols){
+          if(signal.aborted)return [];
+          if(symbol.name!==source.token||!symbol.location?.range?.start)continue;
+          const {uri,range}=symbol.location;
+          try{
+            const target=await validateFileLocation({uri,range},{root});
+            if(!files.has(uri))files.set(uri,fs.readFile(target.path,"utf8").then(text=>({text,fileHash:SHA(text)})));
+            const file=(await files.get(uri))!;
+            let position=range.start;
+            const line=file.text.split(/\r?\n/u)[position.line]??"";
+            if(!line.slice(position.character).startsWith(source.token)){
+              if(!documents.has(uri))documents.set(uri,(async()=>{
+                const client=await runtime().get(target.path,file.text,{uri,signal});
+                return client.capabilities.documentSymbolProvider?
+                  flatten(await client.query({kind:"documentSymbols",uri,signal})??[]):[];
+              })());
+              const selections=(await documents.get(uri))!.filter(symbol=>symbol.name===source.token&&symbol.selectionRange&&
+                compare(symbol.selectionRange.start,range.start)>=0&&compare(symbol.selectionRange.start,range.end)<0);
+              const selected=selections.find(symbol=>compare(symbol.range.start,range.start)===0)??(selections.length===1?selections[0]:null);
+              if(selected)position=selected.selectionRange.start;
             }
-          }
+            const key=JSON.stringify([uri,position.line,position.character]);
+            matches.set(key,{kind:"verified-file",origin:"workspace-symbol",uri,fileHash:file.fileHash,token:source.token,
+              position,line:position.line,character:position.character});
+          }catch{continue;}
         }
-        await openCodePane(ctx,{block,anchor,root:projectRoot,
-          lspManager:await ensureRuntime(ctx as AnyCtx),
-          nvimSocket:configuredSocket(config),diagnostics});
-      }catch(error){ctx.ui.notify("IntelliSense: "+String((error as Error).message??error),"error");}
-    }
+        return [...matches.values()];
+      },
+      lsp:{query},
+      validateSource:async(source:any)=>{
+        if(source.kind==="virtual-document")return true;
+        if(!source.fileHash||!source.uri?.startsWith("file://"))return false;
+        const file=fileURLToPath(source.uri);
+        return within(root,file)&&SHA(await fs.readFile(file,"utf8").catch(()=>""))===source.fileHash;
+      },
+      validateTarget:async(location:any)=>{
+        await validateFileLocation({uri:location.uri,selectionRange:{start:location}},{root});
+        return location;
+      },
+      neovim:{open:async(location:any,options:any)=>{
+        const target=await validateFileLocation({uri:location.uri,selectionRange:{start:location}},{root});
+        return navigator.open({...target,encoding:"utf-16"},{...options,socket:configuredSocket(config)});
+      }}
+    });
+    const registration=registerTabFocusIntelliSense({events:pi.events,sessionId,
+      onAction:async(operation,snapshot)=>{
+        if(disposed||ctx.mode!=="tui")return;
+        transcriptRevision=String(snapshot.transcriptRevision??"");
+        await controller.invoke(operation,snapshot);
+      }});
+    disposeSession=async()=>{
+      if(disposed)return;
+      disposed=true;registration.dispose();controller.dispose();
+      await provider?.close?.();await manager?.close();
+    };
   });
+  pi.on("session_shutdown",async()=>{await disposeSession?.();disposeSession=undefined;});
 }

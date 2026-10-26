@@ -19,10 +19,17 @@ export function within(root, target) {
   const rel = path.relative(root, target);
   return rel === "" || rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel);
 }
-export async function validateFileLocation(location, { root, roots, fs = nodeFs } = {}) {
+/** @param {{root?:string,roots?:string[],fs?:typeof nodeFs}} options */
+export async function validateFileLocation(location, options = {}) {
+  const {root,roots,fs=nodeFs}=options;
   const uri = location?.uri ?? location?.targetUri;
+  const start=(location?.selectionRange??location?.range??location?.targetSelectionRange)?.start;
+  if(!Number.isSafeInteger(start?.line)||start.line<0||!Number.isSafeInteger(start?.character)||start.character<0)
+    throw new RangeError("Invalid destination position");
   if (typeof uri !== "string" || !uri.startsWith("file://")) throw new TypeError("Only local file URI scheme allowed");
-  const url = new URL(uri);
+  let url;
+  try { url = new URL(uri); }
+  catch { throw new TypeError("Invalid local file URI"); }
   if (url.protocol !== "file:" || url.hostname && url.hostname !== "localhost") throw new TypeError("Unsupported URI scheme or host");
   const originalPath = fileURLToPath(url);
   const allowedRoots = roots ?? (root ? [root] : []);
@@ -31,6 +38,6 @@ export async function validateFileLocation(location, { root, roots, fs = nodeFs 
   const canonical = await fs.realpath(originalPath);
   if (!allowedRoots.some(r => within(path.resolve(r), canonical)))
     throw new Error("Destination realpath outside trusted workspace root");
-  return { path:canonical, uri, line:(location.selectionRange ?? location.range ?? location.targetSelectionRange).start.line,
-    character:(location.selectionRange ?? location.range ?? location.targetSelectionRange).start.character };
+  if(!(await fs.stat(canonical)).isFile())throw new TypeError("Destination is not a regular file");
+  return {path:canonical,uri,line:start.line,character:start.character};
 }

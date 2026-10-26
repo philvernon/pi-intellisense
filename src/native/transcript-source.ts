@@ -1,29 +1,99 @@
 import {createHash} from "node:crypto";
-import {visualToLspCharacter} from "../positions.mjs";
-export async function resolveTranscriptSymbol({snapshot,regions,source}:any){
- if(!snapshot?.visualCursor||!snapshot.selectedCodeRegionId)return null;
- const matches=regions.filter((r:any)=>r.codeRegionId===snapshot.selectedCodeRegionId&&
-   r.itemSemanticKey===snapshot.itemSemanticKey&&r.transcriptRevision===snapshot.transcriptRevision&&
-   r.layoutRevision===snapshot.layoutRevision&&r.origin!=="assistant-hint"&&typeof r.fileHash==="string"&&
-   r.displayLines?.some((line:any)=>line.displayRow===snapshot.visualCursor.row&&
-     snapshot.visualCursor.col>=line.displayColStart));
- if(matches.length!==1)return null;
- const region=matches[0],line=region.displayLines.find((x:any)=>x.displayRow===snapshot.visualCursor.row);
- const sourceText=await source.readFile(region.fileUri).catch(()=>null);
- if(typeof sourceText!=="string"||createHash("sha256").update(sourceText).digest("hex")!==region.fileHash)return null;
- const relative=snapshot.visualCursor.col-line.displayColStart;
- const column=visualToLspCharacter(line.text,relative,{tabSize:4});
- if(column===undefined)return null;
- const rx=/[\p{L}\p{N}_$]+/gu;
- for(const item of line.text.matchAll(rx)){
-   if(column>=item.index&&column<item.index+item[0].length)
-     return {uri:region.fileUri,position:{line:line.sourceLine,character:line.sourceCharacterStart+item.index},
-       fileHash:region.fileHash,token:item[0],confidence:"verified"};
+import {stripAnsi,terminalCells} from "../positions.mjs";
+
+// Pi 1.3 renders tabs as three literal spaces, not terminal tab stops.
+function expandedTabs(text:string){return text.replace(/\t/gu,"   ");}
+
+export function symbolAtLine(displayed:string,line:string,cursorColumn:number,sourceStart=0){
+ const text=expandedTabs(stripAnsi(displayed)),needle=expandedTabs(line).trimEnd();
+ if(!needle)return null;
+ const at=text.indexOf(needle);
+ if(at<0||text.indexOf(needle,at+1)>=0)return null;
+ const relative=cursorColumn-terminalCells(text.slice(0,at));
+ for(const match of line.matchAll(/[\p{L}_$][\p{L}\p{N}\p{Mark}_$]*/gu)){
+   const start=terminalCells(expandedTabs(line.slice(0,match.index)));
+   const end=start+terminalCells(match[0]);
+   if(relative>=start&&relative<end)return {token:match[0],character:sourceStart+match.index!};
  }
  return null;
 }
-export function createVirtualCodeDocument({sessionId,codeRegionId,code,languageId}:any){
- const key=encodeURIComponent(sessionId)+"/"+encodeURIComponent(codeRegionId);
- return {uri:"untitled://pi-intellisense/"+key,languageId,content:code,
-  virtual:true,readOnly:true,canNavigateWithoutVerifiedTarget:false};
+
+type SourceLine={text:string;displayText?:string;sourceLine:number;sourceCharacterStart?:number};
+type DisplayLine={displayRow:number;displayColStart:number;text:string;sourceLine:number;sourceCharacterStart:number};
+
+export function mapRenderedRegion<T extends {lines:SourceLine[]}>(snapshot:any,region:T){
+ const rendered=snapshot.renderedLines?.map((line:string)=>stripAnsi(line));
+ if(!rendered||!Number.isInteger(snapshot.renderedStartRow)||!snapshot.visualCursor||
+   !region.lines.length||region.lines.length>2000)return [];
+ const cursorRow=snapshot.visualCursor.row-snapshot.renderedStartRow;
+ const first=Math.max(0,cursorRow-region.lines.length+1);
+ const last=Math.min(cursorRow,rendered.length-region.lines.length);
+ const matches:Array<T & {displayLines:DisplayLine[];itemSemanticKey:string;transcriptRevision:string;layoutRevision:string}>=[];
+ for(let start=first;start<=last;start++){
+   const displayLines:DisplayLine[]=[];
+   for(let offset=0;offset<region.lines.length;offset++){
+     const row=region.lines[offset],display=rendered[start+offset];
+     const needle=expandedTabs(row.displayText??row.text).trimEnd();
+     if(!needle){if(display.trim())break;}
+     const at=needle?display.indexOf(needle):0;
+     if(at<0||needle&&display.indexOf(needle,at+1)>=0||display.slice(at+needle.length).trim())break;
+     if(display.slice(0,at).trim())break;
+     const codeOffset=expandedTabs(row.displayText??row.text).indexOf(expandedTabs(row.text));
+     if(codeOffset<0)break;
+     displayLines.push({displayRow:snapshot.renderedStartRow+start+offset,
+       displayColStart:terminalCells(display.slice(0,at))+codeOffset,
+       text:row.text,sourceLine:row.sourceLine,sourceCharacterStart:row.sourceCharacterStart??0});
+   }
+   if(displayLines.length===region.lines.length){
+     matches.push({...region,displayLines,itemSemanticKey:snapshot.itemSemanticKey,
+       transcriptRevision:snapshot.transcriptRevision,layoutRevision:snapshot.layoutRevision});
+     if(matches.length===2)break;
+   }
+ }
+ return matches;
+}
+
+export async function resolveTranscriptSymbol({snapshot,regions,source}:any){
+ if(!snapshot?.visualCursor)return null;
+ const matches=regions.flatMap((region:any)=>{
+   if(region.itemSemanticKey!==snapshot.itemSemanticKey||
+      region.transcriptRevision!==snapshot.transcriptRevision||region.layoutRevision!==snapshot.layoutRevision)return [];
+   const line=region.displayLines?.find((row:any)=>row.displayRow===snapshot.visualCursor.row);
+   if(!line)return [];
+   const position=symbolAtLine(line.text,line.text,snapshot.visualCursor.col-line.displayColStart,line.sourceCharacterStart);
+   return position?[{region,line,position}]:[];
+ });
+ if(matches.length!==1)return null;
+ const {region,line,position}=matches[0];
+ if(region.kind==="verified-file"){
+   const contents=await source.readFile(region.uri).catch(()=>null);
+   if(typeof contents!=="string"||createHash("sha256").update(contents).digest("hex")!==region.fileHash)return null;
+ }
+ return {...region,position:{line:line.sourceLine,character:position.character},token:position.token,
+   confidence:region.kind==="verified-file"?"verified":"virtual"};
+}
+
+export function mapRenderedFence(snapshot:any,block:any,blocks:any[]){
+ const rendered=snapshot.renderedLines?.map((line:string)=>stripAnsi(line).trimEnd());
+ if(!rendered)return [];
+ const fences:Array<{start:number;end:number;language:string}>=[];
+ let open:{start:number;prefix:string;language:string}|undefined;
+ for(let row=0;row<rendered.length;row++){
+   const line=rendered[row];
+   if(open){
+     if(line===open.prefix+"```"){
+       fences.push({start:open.start,end:row,language:open.language});open=undefined;
+     }
+   }else{
+     const match=/^( *)```([^`]*)$/u.exec(line);
+     if(match)open={start:row,prefix:match[1],language:match[2].trim().split(/\s/u)[0]};
+   }
+ }
+ if(open||fences.length!==blocks.length||fences.some((fence,i)=>fence.language!==blocks[i].language))return [];
+ const fence=fences[block.blockIndex];
+ const lines=block.code.replace(/\r\n/gu,"\n").replace(/\n$/u,"").split("\n");
+ if(!fence||fence.end-fence.start-1!==lines.length)return [];
+ return mapRenderedRegion({...snapshot,renderedLines:snapshot.renderedLines.slice(fence.start+1,fence.end),
+   renderedStartRow:snapshot.renderedStartRow+fence.start+1},
+   {codeRegionId:block.id,lines:lines.map((text:string,sourceLine:number)=>({text,sourceLine}))});
 }

@@ -75,3 +75,62 @@ test('NV-06: invalid character position cannot direct Neovim to unintended colum
   }), /invalid|range|column/i);
   assert.equal(rpc.calls.length, 0);
 });
+
+for (const cancellation of ['abort', 'stale']) {
+  test(`NV: ${cancellation} during file read prevents RPC`, async () => {
+    const rpc = fakeRpc();
+    const controller = new AbortController();
+    let current = true, finishRead, startRead;
+    const reading = new Promise(resolve => { startRead = resolve; });
+    const pending = openInNeovim({ location, socket, rpc,
+      signal: controller.signal, isCurrent: () => current,
+      fs: { readFile: () => new Promise(resolve => { finishRead = resolve; startRead(); }) }
+    });
+    await reading;
+    if (cancellation === 'abort') controller.abort();
+    else current = false;
+    finishRead('zero\nfunction target() {}\n');
+    assert.equal(await pending, undefined);
+    assert.equal(rpc.calls.length, 0);
+  });
+}
+
+test('NV: cancelled or stale calls do not read files', async () => {
+  const rpc = fakeRpc();
+  const controller = new AbortController();
+  controller.abort();
+  const unread = { readFile() { assert.fail('unexpected read'); } };
+  assert.equal(await openInNeovim({ location, socket, rpc, fs: unread, signal: controller.signal }), undefined);
+  assert.equal(await openInNeovim({ location, socket, rpc, fs: unread, isCurrent: () => false }), undefined);
+  assert.equal(rpc.calls.length, 0);
+});
+
+test('NV: currentness is checked immediately before RPC, after computing the position', async () => {
+  const rpc = fakeRpc();
+  let current = true;
+  const destination = { ...location, get character() { current = false; return 9; } };
+  assert.equal(await openInNeovim({ location: destination, socket, rpc, fs, isCurrent: () => current }), undefined);
+  assert.equal(rpc.calls.length, 0);
+});
+
+for (const cancellation of ['stale', 'abort']) {
+  test(`NV: awaits final async currentness and rechecks signal (${cancellation})`, async () => {
+    const rpc = fakeRpc();
+    const controller = new AbortController();
+    let checks = 0, finishCheck, startCheck;
+    const checking = new Promise(resolve => { startCheck = resolve; });
+    const pending = openInNeovim({ location, socket, rpc, fs, signal: controller.signal,
+      async isCurrent() {
+        if (++checks < 3) return true;
+        startCheck();
+        return new Promise(resolve => { finishCheck = resolve; });
+      }
+    });
+    await checking;
+    assert.equal(rpc.calls.length, 0);
+    if (cancellation === 'abort') controller.abort();
+    finishCheck(cancellation === 'abort');
+    assert.equal(await pending, undefined);
+    assert.equal(rpc.calls.length, 0);
+  });
+}

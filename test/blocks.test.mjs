@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { extractFencedBlocks } from '../src/blocks.mjs';
+import { extractFencedBlocks, hideSourceAnnotations } from '../src/blocks.mjs';
 
 const TICK = String.fromCharCode(96);
 const fence = TICK.repeat(3);
@@ -34,6 +34,28 @@ test('BL-05: language is parsed as label, not authoritative source metadata', ()
   const result = extractFencedBlocks(fence + 'ts file=/secrets.ts\nx\n' + fence + '\n', { messageId: 'm-5' });
   assert.equal(result[0].language, 'ts');
   assert.equal(result[0].trustedPath, undefined);
+});
+
+test('source annotations are parsed as untrusted zero-based file ranges', () => {
+  const block = extractFencedBlocks(fence + 'ts source="src/a.ts" lines="42-43"\na\nb\n' + fence)[0];
+  assert.deepEqual(block.sourceBinding, {path:'src/a.ts',startLine:41,endLine:42});
+  assert.equal(block.trustedPath, undefined);
+});
+
+test('malformed source annotations fail closed without throwing', () => {
+  for (const info of ['ts source="a.ts"', 'ts lines="1"', 'ts source="a.ts" lines="0"',
+    'ts source="a.ts" lines="3-1"', 'ts source="a.ts" lines="99999999999999999999"']) {
+    assert.equal(extractFencedBlocks(fence + info + '\nx\n' + fence)[0].sourceError, 'invalid-annotation');
+  }
+});
+
+test('renderer hides fence metadata, including streaming openings, without changing code', () => {
+  const opening = fence + 'ts source="src/a.ts" lines="1"';
+  assert.equal(hideSourceAnnotations(opening), fence + 'ts');
+  assert.equal(hideSourceAnnotations(opening + '\nconst source="not metadata";\n' + fence),
+    fence + 'ts\nconst source="not metadata";\n' + fence);
+  const nested = TICK.repeat(4) + 'md\n' + opening + '\nx\n' + fence + '\n' + TICK.repeat(4);
+  assert.equal(hideSourceAnnotations(nested), nested);
 });
 
 test('BL-06: empty code fences retain identity and code', () => {

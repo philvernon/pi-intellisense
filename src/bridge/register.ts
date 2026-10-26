@@ -1,15 +1,18 @@
 type Snapshot = {
   version: number; sessionId: string;
-  semanticKey?: string; itemSemanticKey?: string;
-  kind?: string; itemKind?: string;
-  sourceRevision?: number; transcriptRevision?: string; layoutRevision?: string;
+  itemSemanticKey: string;
+  itemKind: string;
+  transcriptRevision: string; layoutRevision: string;
+  sourceText?: string; toolCallId?: string;
+  renderedLines: string[]; renderedStartRow: number;
+  isCurrent?:()=>boolean;
+  isNavigationCurrent?:()=>boolean;
+  withNavigationPicker?:<T>(run:()=>Promise<T>)=>Promise<T>;
   visualCursor: {row:number;col:number} | null;
   screenCursor?: {row:number;col:number};
 };
 export const INTELLISENSE_ACTIONS = [
-  "hover", "definition", "references", "declaration", "implementation",
-  "typeDefinition", "documentSymbols", "previousDiagnostic", "nextDiagnostic",
-  "signatureHelp", "completion"
+  "hover", "definition", "references", "declaration", "implementation", "typeDefinition"
 ] as const;
 
 export function registerTabFocusIntelliSense({events,sessionId,onAction}: {
@@ -20,7 +23,7 @@ export function registerTabFocusIntelliSense({events,sessionId,onAction}: {
   const invoke=async(operation:string,snapshot:Snapshot)=>{
     if(disposed)throw new Error("IntelliSense session disposed");
     if(snapshot?.version!==1||snapshot.sessionId!==sessionId||
-      !(typeof snapshot.itemSemanticKey==="string"||typeof snapshot.semanticKey==="string")||
+      typeof snapshot.itemSemanticKey!=="string"||
       !snapshot.visualCursor||!Number.isInteger(snapshot.visualCursor.row)||
       !Number.isInteger(snapshot.visualCursor.col))
       throw new Error("Invalid or stale IntelliSense session snapshot");

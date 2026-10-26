@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 
@@ -30,25 +31,13 @@ export function stripAnsi(input) {
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, "");
 }
 
-function glyphWidth(text) {
-  if (!text || /^\p{Mark}+$/u.test(text)) return 0;
-  const cp = text.codePointAt(0);
-  if (/\p{Extended_Pictographic}/u.test(text) || cp >= 0x1100 && (
-    cp <= 0x115f || cp >= 0x2329 && cp <= 0x232a ||
-    cp >= 0x2e80 && cp <= 0xa4cf || cp >= 0xac00 && cp <= 0xd7a3 ||
-    cp >= 0xf900 && cp <= 0xfaff || cp >= 0xfe10 && cp <= 0xfe19 ||
-    cp >= 0xfe30 && cp <= 0xfe6f || cp >= 0xff00 && cp <= 0xff60 ||
-    cp >= 0xffe0 && cp <= 0xffe6 || cp >= 0x1f000))
-    return 2;
-  return 1;
-}
 export function visualToLspCharacter(line, displayCol, { tabSize = 4 } = {}) {
   if (!Number.isInteger(displayCol) || displayCol < 0) return undefined;
   const source = stripAnsi(line);
   let col = 0, utf16 = 0;
   for (const { segment } of segmenter.segment(source)) {
     if (displayCol <= col) return utf16;
-    const width = segment === "\t" ? tabSize - (col % tabSize) : glyphWidth(segment);
+    const width = segment === "\t" ? tabSize - (col % tabSize) : visibleWidth(segment);
     if (displayCol < col + width) return utf16;
     col += width; utf16 += segment.length;
   }
@@ -59,7 +48,7 @@ export const displayColumnToUtf16 = visualToLspCharacter;
 export function terminalCells(text, {tabSize=4}={}) {
   let col=0;
   for (const {segment} of segmenter.segment(stripAnsi(text))) {
-    const width=segment==="\t"?tabSize-(col%tabSize):glyphWidth(segment);
+    const width=segment==="\t"?tabSize-(col%tabSize):visibleWidth(segment);
     col+=width;
   }
   return col;

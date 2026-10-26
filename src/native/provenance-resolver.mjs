@@ -1,141 +1,183 @@
 import path from "node:path";
-import { promises as nodeFs } from "node:fs";
-import { createHash } from "node:crypto";
-import { pathToFileURL } from "node:url";
-import { extractFencedBlocks } from "../blocks.mjs";
-import { stripAnsi, terminalCells, visualToLspCharacter } from "../positions.mjs";
-import { within } from "../locations.mjs";
-import { resolveLiveTranscriptSymbol } from "./live-source.ts";
+import {promises as nodeFs} from "node:fs";
+import {createHash} from "node:crypto";
+import {homedir} from "node:os";
+import {pathToFileURL,fileURLToPath} from "node:url";
+import {extractFencedBlocks} from "../blocks.mjs";
+import {within} from "../locations.mjs";
+import {mapRenderedRegion,mapRenderedFence,resolveTranscriptSymbol} from "./transcript-source.ts";
 
-const LANGUAGES = new Map([
+const LANGUAGES=new Map([
   ["ts","typescript"],["typescript","typescript"],["tsx","typescriptreact"],
   ["js","javascript"],["javascript","javascript"],["jsx","javascriptreact"],
   ["py","python"],["python","python"],["rs","rust"],["rust","rust"],
   ["go","go"],["lua","lua"]
 ]);
-const identify = /[\p{L}_$][\p{L}\p{N}_$]*/gu;
-const MAX_BYTES = 2_000_000;
+const MAX_BYTES=2_000_000;
+const hash=text=>createHash("sha256").update(text).digest("hex");
+const unmapped=reason=>({kind:"unmapped",reason});
+const linesOf=text=>text.replace(/\r\n/gu,"\n").replace(/\n$/u,"").split("\n");
 
-export function symbolAtLine(displayed, line, cursorColumn, sourceStart=0) {
-  const text=stripAnsi(displayed);
-  const at=text.indexOf(line);
-  if(at<0 || text.indexOf(line,at+1)>=0) return null;
-  const visualStart=terminalCells(text.slice(0,at));
-  const offset=visualToLspCharacter(line,cursorColumn-visualStart);
-  if(offset===undefined)return null;
-  for(const match of line.matchAll(identify)) {
-    if(offset>=match.index && offset<match.index+match[0].length)
-      return {token:match[0],character:sourceStart+match.index};
-  }
-  return null;
-}
-
-export function readFileReferences(entries=[]) {
-  const calls=new Map();
-  const records=[];
-  for(const entry of entries) {
-    const m=entry?.message;
-    if(entry?.type!=="message"||!m)continue;
-    if(m.role==="assistant" && Array.isArray(m.content)) {
-      for(const part of m.content) {
-        if(part?.type==="toolCall" && part.name==="read" &&
-          typeof part.id==="string" && typeof part.arguments?.path==="string")
-          calls.set(part.id,part.arguments.path);
-      }
+export function readFileReferences(entries=[]){
+  const calls=new Map(),records=[];
+  for(const entry of entries){
+    const message=entry?.message;
+    if(entry?.type!=="message"||!message)continue;
+    if(message.role==="assistant"&&Array.isArray(message.content)){
+      for(const part of message.content)
+        if(part?.type==="toolCall"&&part.name==="read"&&typeof part.id==="string"&&
+          typeof part.arguments?.path==="string")calls.set(part.id,part.arguments);
     }
-    if(m.role==="toolResult" && m.toolName==="read" && !m.isError) {
-      const candidate=calls.get(m.toolCallId);
-      if(!candidate)continue;
-      const content=typeof m.content==="string"?m.content:
-        Array.isArray(m.content)?m.content.filter(x=>x?.type==="text").map(x=>x.text).join("\n"):"";
-      if(content && content.length<=MAX_BYTES)
-        records.push({candidate,content,entryId:String(entry.id??"")});
-    }
+    if(message.role!=="toolResult"||message.toolName!=="read"||message.isError||message.details?.truncation?.truncated)continue;
+    const args=calls.get(message.toolCallId);
+    if(!args)continue;
+    const content=typeof message.content==="string"?message.content:
+      Array.isArray(message.content)?message.content.filter(x=>x?.type==="text").map(x=>x.text).join("\n"):"";
+    if(content&&content.length<=MAX_BYTES)records.push({candidate:args.path,content,
+      offset:args.offset??1,limit:args.limit,toolCallId:message.toolCallId});
   }
   return records;
 }
-function labeledTextLines(raw) {
-  return raw.split(/\r?\n/u).map(x=>{
-    const m=/^\s*(\d+)(?::|\s*[│|])\s?(.*)$/u.exec(x);
-    return m?{text:m[2],line:Number(m[1])-1}:{text:x,line:null};
-  });
+
+function nativeReadPath(candidate){
+  let value=candidate.replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/gu," ");
+  if(value.startsWith("@"))value=value.slice(1);
+  if(value==="~")return homedir();
+  if(value.startsWith("~/"))return path.join(homedir(),value.slice(2));
+  if(value.startsWith("file://")){
+    try{return fileURLToPath(value);}catch{return null;}
+  }
+  return value;
 }
-async function safeFile(root,candidate,fs) {
+async function safeFile(root,candidate,fs){
+  if(typeof candidate!=="string")return null;
   const proposed=path.resolve(root,candidate);
-  if(!within(root,proposed))return null;
-  const [realRoot,realFile]=await Promise.all([
-    fs.realpath(root).catch(()=>path.resolve(root)),
-    fs.realpath(proposed).catch(()=>null)
-  ]);
-  if(!realFile || !within(realRoot,realFile))return null;
+  const [realRoot,realFile]=await Promise.all([fs.realpath(root),fs.realpath(proposed)]).catch(()=>[]);
+  if(!realRoot||!realFile||!within(realRoot,realFile))return null;
   const contents=await fs.readFile(realFile,"utf8").catch(()=>null);
   return typeof contents==="string"&&contents.length<=MAX_BYTES?
-    {file:realFile,contents}:null;
+    {uri:pathToFileURL(realFile).href,sourceText:contents,fileHash:hash(contents)}:null;
 }
-function verifiedLineIndex(originalLine,fileLines,claimedIndex) {
-  if(Number.isInteger(claimedIndex))
-    return fileLines[claimedIndex]===originalLine?claimedIndex:null;
-  const indices=[];
-  for(let i=0;i<fileLines.length;i++)if(fileLines[i]===originalLine)indices.push(i);
-  return indices.length===1?indices[0]:null;
+
+function readLines(record,file){
+  if(!Number.isSafeInteger(record.offset)||record.offset<1)return null;
+  const disk=linesOf(file.sourceText);
+  const rows=linesOf(record.content).map((text,i)=>({text,sourceLine:record.offset-1+i}));
+  if((record.limit===undefined||Number.isSafeInteger(record.limit)&&record.limit>=rows.length)&&
+    rows.every(row=>disk[row.sourceLine]===row.text))return rows;
+  if(!Number.isSafeInteger(record.limit)||record.limit<1)return null;
+  const allLines=file.sourceText.replace(/\r\n/gu,"\n").split("\n"),end=record.offset-1+record.limit;
+  const selected=allLines.slice(record.offset-1,end).join("\n"),remaining=allLines.length-end;
+  const expected=selected+`\n\n[${remaining} more lines in file. Use offset=${end+1} to continue.]`;
+  if(remaining<=0||record.content.replace(/\r\n/gu,"\n")!==expected)return null;
+  return linesOf(selected).map((text,i)=>({text,sourceLine:record.offset-1+i}));
 }
-async function fromRead(snapshot,root,entries,fs){
-  if(snapshot.itemKind!=="tool")return [];
-  const display=stripAnsi(snapshot.renderedLine??"");
-  const results=[];
-  for(const record of readFileReferences(entries)) {
-    const visible=String(snapshot.itemText??"");
-    if(!visible || !record.content)continue;
-    const candidate=await safeFile(root,record.candidate,fs);
-    if(!candidate)continue;
-    const lines=candidate.contents.split(/\r?\n/u);
-    for(const row of labeledTextLines(record.content)) {
-      if(row.text.trim().length<2 || !visible.includes(row.text))continue;
-      const index=verifiedLineIndex(row.text,lines,row.line);
-      if(index===null)continue;
-      const target=symbolAtLine(display,row.text,snapshot.visualCursor.col);
-      if(!target)continue;
-      results.push({kind:"verified-file",uri:pathToFileURL(candidate.file).href,
-        fileHash:createHash("sha256").update(candidate.contents).digest("hex"),
-        position:{line:index,character:target.character},token:target.token,
-        origin:"structured-read",sourceText:candidate.contents});
+
+function commonIndent(lines){
+  const nonblank=lines.filter(line=>line.trim());
+  let prefix=/^[\t ]*/u.exec(nonblank[0]??"")[0];
+  for(const line of nonblank)while(!line.startsWith(prefix))prefix=prefix.slice(0,-1);
+  return prefix;
+}
+
+function quotedRanges(quote,rows){
+  const indent=commonIndent(quote),body=quote.map(line=>line.trim()?line.slice(indent.length):"");
+  const first=body.findIndex(line=>line.trim());
+  if(first<0)return [];
+  const matches=[];
+  for(let start=0;start+quote.length<=rows.length;start++){
+    if(rows[start+first].text.trimStart()!==body[first].trimStart())continue;
+    const window=rows.slice(start,start+quote.length),prefix=commonIndent(window.map(row=>row.text));
+    if(window.some((row,i)=>(row.text.trim()?row.text.slice(prefix.length):"")!==body[i]))continue;
+    matches.push({start,sourceLine:window[0].sourceLine,sourceCharacterStart:prefix.length-indent.length});
+    if(matches.length===2)break;
+  }
+  return matches;
+}
+
+async function quotedReadSource(quote,{root,entries,fs}){
+  const candidates=new Map(),files=new Map();
+  for(const record of readFileReferences(entries)){
+    if(!Number.isSafeInteger(record.offset)||record.offset<1||
+      record.limit!==undefined&&(!Number.isSafeInteger(record.limit)||record.limit<1))continue;
+    const rows=linesOf(record.content).slice(0,record.limit).map((text,i)=>({text,sourceLine:record.offset-1+i}));
+    const matches=quotedRanges(quote,rows);
+    if(!matches.length)continue;
+    const candidate=nativeReadPath(record.candidate);
+    if(candidate===null)continue;
+    const proposed=path.resolve(root,candidate);
+    if(!files.has(proposed))files.set(proposed,safeFile(root,candidate,fs));
+    const file=await files.get(proposed),verified=file&&readLines(record,file);
+    for(const match of matches){
+      const key=JSON.stringify([file?.uri??proposed,match.sourceLine,match.sourceCharacterStart]);
+      const valid=verified&&match.start+quote.length<=verified.length;
+      if(!candidates.has(key)||valid)candidates.set(key,{...match,file,valid});
     }
   }
-  return results;
+  if(candidates.size>1)return unmapped("ambiguous");
+  const binding=candidates.values().next().value;
+  if(!binding)return null;
+  if(!binding.valid)return unmapped(binding.file?"stale-source":"source-unavailable");
+  return binding;
 }
-function parseFences(snapshot) {
-  const text=String(snapshot.itemText??"");
-  if(!text.includes("\x60")&&!text.includes("~"))return [];
-  return extractFencedBlocks(text,{messageId:snapshot.itemSemanticKey??"",origin:"transcript"});
-}
-function virtualResult(snapshot) {
-  const display=stripAnsi(snapshot.renderedLine??"");
-  const hits=[];
-  for(const block of parseFences(snapshot)) {
-    const languageId=LANGUAGES.get(block.language.toLowerCase());
-    if(!languageId)continue;
-    const sourceLines=block.code.split(/\r?\n/u);
-    for(let i=0;i<sourceLines.length;i++){
-      const sourceLine=sourceLines[i];
-      if(!sourceLine.trim())continue;
-      const target=symbolAtLine(display,sourceLine,snapshot.visualCursor.col);
-      if(target)hits.push({kind:"virtual-document",
-        uri:"untitled://pi-intellisense/"+encodeURIComponent(snapshot.sessionId??"")+"/"+encodeURIComponent(block.id),
-        languageId,text:block.code,position:{line:i,character:target.character},
-        token:target.token,origin:"fence",readOnly:true});
+
+/** @param {{root:string,entries?:unknown[],fs?:typeof nodeFs,allowVirtual?:boolean}} options */
+export async function resolveTranscriptProvenance(snapshot,options){
+  const {root,entries=[],fs=nodeFs,allowVirtual=true}=options;
+  if(!snapshot?.visualCursor)return unmapped("cursor-not-symbol");
+  const regions=[],files=new Map();
+  if(snapshot.itemKind==="tool"){
+    const records=readFileReferences(entries).filter(record=>record.toolCallId===snapshot.toolCallId);
+    if(records.length!==1)return unmapped(records.length?"ambiguous":"source-unknown");
+    const record=records[0],file=await safeFile(root,nativeReadPath(record.candidate),fs);
+    if(!file)return unmapped("source-unknown");
+    const lines=readLines(record,file);
+    if(!lines)return unmapped("stale-source");
+    files.set(file.uri,file.sourceText);
+    regions.push(...mapRenderedRegion(snapshot,{...file,kind:"verified-file",
+      codeRegionId:"read:"+record.toolCallId,origin:"structured-read",lines}));
+  }else if(snapshot.itemKind==="message"){
+    if(typeof snapshot.sourceText!=="string")return unmapped("source-unknown");
+    const blocks=extractFencedBlocks(snapshot.sourceText,{messageId:snapshot.itemSemanticKey,origin:"assistant"});
+    for(const block of blocks){
+      const codeLines=linesOf(block.code);
+      if(!block.code)continue;
+      // Map before validating so a broken annotation elsewhere cannot disable this block.
+      const placements=mapRenderedFence(snapshot,block,blocks);
+      if(!placements.some(region=>region.displayLines.some(row=>row.displayRow===snapshot.visualCursor.row)))continue;
+      if(block.sourceError)return unmapped(block.sourceError);
+      if(block.sourceBinding){
+        const binding=block.sourceBinding,file=await safeFile(root,binding.path,fs);
+        if(!file)return unmapped("source-unavailable");
+        const disk=linesOf(file.sourceText);
+        if(binding.endLine-binding.startLine+1!==codeLines.length||
+          codeLines.some((line,i)=>disk[binding.startLine+i]!==line))return unmapped("stale-source");
+        files.set(file.uri,file.sourceText);
+        regions.push(...placements.map(region=>({...region,...file,kind:"verified-file",origin:"annotated-fence",
+          displayLines:region.displayLines.map(row=>({...row,sourceLine:row.sourceLine+binding.startLine}))})));
+      }else{
+        const binding=await quotedReadSource(codeLines,{root,entries,fs});
+        if(binding&&binding.kind!=="unmapped"){
+          files.set(binding.file.uri,binding.file.sourceText);
+          const sourceRow=row=>({...row,sourceLine:row.sourceLine+binding.sourceLine,
+            sourceCharacterStart:binding.sourceCharacterStart});
+          regions.push(...placements.map(region=>({...region,...binding.file,kind:"verified-file",origin:"read-quote",
+            lines:region.lines.map(sourceRow),displayLines:region.displayLines.map(sourceRow)})));
+        }else{
+          const languageId=LANGUAGES.get(block.language.toLowerCase());
+          if(!languageId)continue;
+          if(!allowVirtual)return unmapped("virtual-document-unsupported");
+          regions.push(...placements.map(region=>({...region,kind:"virtual-document",languageId,
+            uri:"untitled://pi-intellisense/"+encodeURIComponent(snapshot.sessionId)+"/"+encodeURIComponent(block.id),
+            text:block.code,readOnly:true,origin:"fence"})));
+        }
+      }
     }
-  }
-  return hits.length===1?hits[0]:null;
-}
-export async function resolveTranscriptProvenance(snapshot,{root,entries=[],fs=nodeFs,allowVirtual=true}={}){
-  if(!snapshot?.visualCursor || !String(snapshot.renderedLine??"").trim())
-    return {kind:"unmapped",reason:"cursor-not-symbol"};
-  const read=await fromRead(snapshot,root,entries,fs);
-  if(read.length===1)return read[0];
-  if(read.length>1)return {kind:"unmapped",reason:"ambiguous"};
-  const disk=await resolveLiveTranscriptSymbol(snapshot,{root,readFile:fs.readFile.bind(fs),realpath:fs.realpath.bind(fs)});
-  if(disk)return {...disk,kind:"verified-file",origin:"verified-message"};
-  const virtual=virtualResult(snapshot);
-  if(virtual)return allowVirtual?virtual:{kind:"unmapped",reason:"virtual-document-unsupported"};
-  return {kind:"unmapped",reason:"source-unknown"};
+  }else return unmapped("source-unknown");
+  const hits=regions.filter(region=>region.displayLines.some(row=>row.displayRow===snapshot.visualCursor.row));
+  if(hits.length>1)return unmapped("ambiguous");
+  if(!hits.length)return unmapped("wrapped-unmappable");
+  const anchor=await resolveTranscriptSymbol({snapshot,regions:hits,
+    source:{readFile:async uri=>files.get(uri)??fs.readFile(fileURLToPath(uri),"utf8")}});
+  return anchor??unmapped("cursor-not-symbol");
 }

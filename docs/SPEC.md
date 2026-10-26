@@ -1,4 +1,4 @@
-> NOTE: Alternative standalone code-pane design, not the chosen v1. The canonical design in ../SPEC.md extends the existing pi-tab-focus visual cursor with K/gd and preserves its yank. This document remains for design comparison only.
+> HISTORICAL / RETIRED: this rejected standalone-viewer proposal is not implemented. The old viewer and binary wrapper have been removed. See [the current specification](../SPEC.md) for source-annotated native transcript navigation and on-demand Neovim startup.
 
 # Pi IntelliSense — alternative standalone-viewer architecture (not selected for v1)
 

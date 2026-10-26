@@ -6,8 +6,9 @@ const start = { line: 9, character: 3 };
 const end = { line: 9, character: 7 };
 const loc = (uri, line = 9) => ({ uri, range: { start: { line, character: 3 }, end } });
 const fs = {
+  async stat(path) { return {isFile:()=>path !== '/project/src/directory.ts'}; },
   async realpath(path) {
-    if (path === '/project/src/valid.ts' || path === '/project/src/a | echo hacked.ts') return path;
+    if (path === '/project/src/valid.ts' || path === '/project/src/a | echo hacked.ts' || path === '/project/src/directory.ts') return path;
     if (path === '/project/src/symlink.ts') return '/etc/passwd';
     if (path === '/project-evil/src/fake.ts') return path;
     throw new Error('ENOENT');
@@ -64,4 +65,11 @@ test('LO-07: symlink target outside trusted root is rejected', async () => {
 
 test('LO-08: nonexistent destination is not treated as new file', async () => {
   await assert.rejects(() => validateFileLocation(loc('file:///project/nope.ts'), { root: '/project', fs }), /ENOENT|missing|exist/i);
+});
+
+test('invalid positions and directory targets are rejected before launching an editor', async () => {
+  for (const position of [{line:-1,character:0},{line:0,character:-1},{line:NaN,character:0}]) {
+    await assert.rejects(validateFileLocation({uri:'file:///project/src/valid.ts',range:{start:position}}, {root:'/project',fs}), /position/);
+  }
+  await assert.rejects(validateFileLocation(loc('file:///project/src/directory.ts'), {root:'/project',fs}), /regular file/);
 });

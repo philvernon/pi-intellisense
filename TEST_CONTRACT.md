@@ -1,161 +1,38 @@
 # Implementation and acceptance contracts
 
-**Implemented 23 October 2026.** [SPEC.md](SPEC.md) is authoritative. Native Pi-transcript hover and definition now work through the locally patched `~/dev-trash/pi-tab-focus`. The npm-distributed copy is not yet patched. The native contracts and local tab-focus integration tests are green; live Pi/TypeScript/Neovim smoke testing has also passed.
+[SPEC.md](SPEC.md) defines the product. Tests exercise the single native transcript implementation; the standalone viewer and test-only alternative controllers/adapters have been removed.
 
-## 1. Existing implementation (GREEN regression suite)
+## Production coverage
 
-The existing modules are implemented and tested:
+- `test/blocks.test.mjs`: fence extraction, candidate metadata, malformed annotation rejection, hidden attributes and streaming openings.
+- `test/provenance-resolver.test.mjs`: actual resolver with temporary files; full-range validation, exact read identity/offset, Pi-normalized paths, raw output/argument-verified limit notices, actual fence boundaries, automatic read-backed quote recovery, common-indent/UTF-16 mapping, duplicate-location ambiguity and alias deduplication, stale-content refusal, safe paths, virtual fences, Pi-consistent widths and wrapped-region rejection.
+- `test/native/source-map.contract.test.mjs`: the display-region mapper called by the live resolver; exact UTF-16 cursor positions, source versions, revisions, ambiguity and non-symbol rejection.
+- `test/pi-entry.test.mjs`: real extension registrations, prompt section, Markdown hook, session lifecycle and native dispatch through an actual framed mock-LSP child process. No separate viewer or model tools.
+- `test/native/native-controller.contract.test.mjs`: workspace symbol lookup, real-document hover, direct workspace definition handoff, ambiguous symbol picker, workspace misses, cancellation and source revalidation.
+- `test/native/inline-hover.contract.test.mjs`: geometry, sanitization, keyboard ownership and Tab/Escape.
+- `test/neovim-launcher.test.mjs`: inert construction, socket reuse, lazy tmux split, concurrent startup, bounded readiness, confirmed-exit recovery, ambiguous failures and shell-free paths.
+- `test/neovim.test.mjs`, `test/wire.test.mjs`: structured RPC and real socket framing, UTF-8 byte columns and literal path handling.
+- `test/runtime.test.mjs` and `test/lsp.test.mjs`: shared cold-start initialization, independent cancellation, failure/close races, workspace symbols/resolution, automatic language selection and project attachment, UTF-16-only negotiation and real framed subprocesses.
+- Other default suites retain provider, coordinate and destination-validation coverage.
 
-- `src/blocks.mjs`: finalized fenced Markdown extraction
-- `src/provenance.mjs`, `src/positions.mjs`, `src/locations.mjs`: file-verified matching, text offsets and destination safety
-- `src/lsp.mjs`, `src/lsp-stdio.mjs`, `src/runtime.mjs`: LSP transport and lifecycle
-- `src/neovim.mjs`, `src/neovim-rpc.mjs`, `src/msgpack.mjs`: structured Neovim remote navigation
-- `src/bridge/register.ts`, `src/bridge/gestures.ts`: earlier **partial** integration contracts; they do not bind keys in the installed `pi-tab-focus`
-- `src/index.ts`, `src/ui/code-pane.ts`: standalone `/intel` view (transitional only)
+Real transcript key dispatch belongs to `pi-tab-focus/src/tests/index.test.ts`. That repository also tests original source text, exact tool identity and hidden-metadata invalidation. There is no parallel keyboard-owner implementation here.
 
-`npm test` runs `test/*.test.mjs` for legacy behaviour. Those tests **do not prove native transcript hover or go-to-definition**.
+## Live process/terminal coverage
 
-## 2. Native integration APIs (implemented contract suite)
+`test/integration/runtime.test.mjs` uses real TypeScript LSP and an isolated tmux server with Neovim. `test/integration/transcript.test.mjs` uses real Pi with saved fixture sessions, no model requests, and the companion bridge supplied through `PI_TAB_FOCUS_SOURCE`.
 
-The following module paths/exports are implemented in this repo. The `pi-tab-focus` adapter is also reflected in the locally patched `~/dev-trash/pi-tab-focus/src/index.ts`. Tests in `test/native/*.test.mjs` pass, but the installed npm `pi-tab-focus` remains unchanged. Tests may be moved into the upstream `pi-tab-focus` project when the patch is committed or published. The new native host/source mapping uses additional `src/native/live-source.ts` and the `src/index.ts` entrypoint.
-
-### 2.1 `src/native/tab-focus-adapter.ts` — upstream reference/harness
-
-```ts
-createTabFocusNativeBridge({
-  events: { on(event, listener): unsubscribe; emit(event, payload): void },
-  getFocus(): FocusState,
-  legacyHandleKey(key: string): { handled: boolean, owner: string }
-}): {
-  handleKey(key: string): Promise<{handled: boolean}> | {handled: boolean};
-  dispose(): void;
-}
-```
-
-**Production ownership:** port functionality to `philvernon/pi-tab-focus` `src/index.ts` and `src/vim-navigation.ts`; do not actually install a second raw terminal key listener in `pi-intellisense`. `getFocus()` returns mode, `sessionId`, visual cursor, item identity, layout/transcript revisions, `screenCursor`, selection and transient-overlay state. The adapter must only consume subscribed gestures when a visual cursor points to a code token and the transcript is the focused surface.
-
-Bridge events use:
-
-```ts
-type FocusSnapshotV1 = {
-  version: 1;
-  sessionId: string;
-  itemSemanticKey: string;
-  itemKind: string;
-  transcriptRevision: string;
-  layoutRevision: string;
-  visualCursor: {row:number; col:number};   // absolute transcript row/cell
-  screenCursor: {row:number; col:number};   // terminal-relative
-  selectedCodeRegionId: string | null;
-  sourceSpans: readonly VerifiedDisplaySpan[];
-};
-```
-
-`pi-intellisense:register:v1` = `{sessionId,extensionId:"pi-intellisense",actions,invoke(action,snapshot)}`; unregister and availability messages as defined in `SPEC.md §3`. Load order/hot reload cannot duplicate callbacks. `K` in item mode retains previous-item action. In visual mode `gd` is a two-key semantic operation, while `gg`/`ge`/`gE` and yank remain legacy motions. All modal/transient editor input belongs to Pi.
-
-### 2.2 `src/native/overlay-geometry.ts` and `src/native/inline-hover.ts`
-
-```ts
-projectTranscriptCursor({
-  cursor: {row,col},                  // absolute transcript
-  viewport: {scrollTop,top,left,height,width},
-  terminal: {rows,cols}
-}): {row,col} | null;
-
-placeHoverOverlay({
-  anchor: {row,col},                 // terminal-relative anchor
-  tooltip: {width,height},
-  terminal: {rows,cols},
-  protectedRows: {top,bottom}
-}): {row:number;col:number;width:number;maxHeight:number;anchor?:string};
-
-showInlineHover({
-  ui, snapshot: FocusSnapshotV1,
-  markup: string, geometry: {terminal,protectedRows},
-  focusState?: unknown
-}): Promise<void>;
-```
-
-Must call **`ui.custom(factory, {overlay:true,overlayOptions:{row,col,width,maxHeight}})`**, not `openCodePane`, `setEditorComponent` or any new transcript renderer. Escape closes only the overlay and leaves the existing transcript focus/cursor/yank/viewport unchanged. Offscreen anchor must not create a tooltip.
-
-### 2.3 `src/native/transcript-source.ts`
-
-```ts
-resolveTranscriptSymbol({
-  snapshot: FocusSnapshotV1,
-  regions: readonly VerifiedCodeRegion[],
-  source: { readFile(uri: string): Promise<string> }
-}): Promise<{
-  uri: string;
-  position: {line:number;character:number};
-  fileHash: string;
-  token: string;
-} | null>;
-
-createVirtualCodeDocument({
-  sessionId,codeRegionId,code,languageId
-}): {uri:string;languageId:string;virtual:true;readOnly:true;canNavigateWithoutVerifiedTarget:false};
-```
-
-`VerifiedCodeRegion` is identified by Pi session item/part/fence and includes exact original code lines, `fileUri`, verified `fileHash`, display row/cell bounds, source line/UTF-16 character base, transcript revision and layout revision. `resolveTranscriptSymbol` identifies the *actual identifier under cursor*, respecting grapheme widths and wrapping. Returns null on gutter, whitespace, ambiguous anchor, revision mismatch, changed file, partial stream or unverified assistant hint. Virtual documents allow optional local hover; they do not imply an actual source destination.
-
-### 2.4 `src/native/native-controller.ts`
-
-```ts
-createNativeTranscriptController({
-  ui, lsp: {query(request): Promise<unknown>},
-  neovim: {open(location): Promise<void>},
-  resolveSymbol(snapshot): Promise<SourceAnchor | null>,
-  getSession(): {sessionId:string;transcriptRevision:string}
-}): {
-  invoke(action: LspAction, snapshot: FocusSnapshotV1): Promise<void>;
-  dispose(): void;
-};
-```
-
-`invoke("hover")` requests `textDocument/hover` and opens only the positioned overlay. `invoke("definition")` resolves `Location/LocationLink`, validates targets, sends a single safe destination to the Neovim adapter and shows an **overlay picker** if several targets exist. No model message, prompt mutation or separate editor viewer. Late results from different session/revision are ignored; overlay must be cancellable. One invocation per key action.
-
-### 2.5 `src/native/neovim-host.ts`
-
-```ts
-resolveNeovimHost({
-  config:{socket?:string;focusPolicy?:string},
-  env:{NVIM?:string;TMUX?:string},
-  sidekick:{backend:"tmux";tmuxServer:"agents"}
-}): {socket:string;focusPolicy:"preserve";spawnEditor:false} | null;
-
-createNeovimHandoff({
-  socket,connect,focusPolicy:"preserve",focusHost?,spawn?
-}): {open(location):Promise<void>};
-```
-
-Must work with the user's `~/dev-trash/pi-tools` Sidekick `tmux -L agents` integration. Explicit socket wins; never assume `NVIM` survives tmux. Existing Neovim Msgpack-RPC receives structured path/line/byte-column data. No nested Neovim, new tmux instance or automatic host focus theft.
-
-## 3. Running tests
+The transcript cases cover plain workspace-only assistant code with no reads or language tag, unannotated read-backed quotes, annotated code and expanded raw read output. They assert real `K` hover, lazy `gd` launch, and the actual Neovim buffer/cursor. A separate real-LSP regression recovers context for a usage-only quote and resolves an imported class method's type and definition in another file, rather than `any`. Servers and configuration are isolated from user sessions.
 
 ```sh
-npm test               # existing GREEN implementation regressions
-npm run test:native     # new RED native contract tests
-npm run test:all        # both; RED until actual native feature is implemented
-npm run build           # existing entrypoint import and syntax checks
+npm run test:all
+npm run build
+PI_TAB_FOCUS_SOURCE=/path/to/pi-tab-focus/src/index.ts npm run test:integration
 ```
 
-Native test IDs NT-01..NT-10 now pass. See [docs/TEST_PLAN.md](docs/TEST_PLAN.md). There must eventually be real Pi/TTY and `pi-tab-focus` integration coverage in addition to the current fakes.
+`test/integration/workspace.test.mjs` additionally verifies cold workspace lookup with explicit and automatically selected language. No model reads or annotations are involved.
 
-## 4. Definition of done
+Without `PI_TAB_FOCUS_SOURCE`, only the four Pi-terminal cases skip; real LSP/tmux/Neovim runtime tests still run. Integration commands require installed executables and should be run deliberately.
 
-- Pressing `Tab → v → K` on a symbol in the **original Pi transcript** displays an on-symbol floating LSP tooltip. `Esc` dismisses only the tooltip.
-- Pressing `gd` in the same transcript jumps to the source using the existing Neovim server.
-- Native `pi-tab-focus` motions and yank are unaffected.
-- Source positions are verified and correct; unsafe/unknown targets never open.
-- Native automated tests and a real Pi+Neovim+Sidekick E2E test are green.
+## Acceptance boundary
 
-The original Pi transcript `K` hover and `gd` jump were exercised in a live local PTY with a real TypeScript language server and headless Neovim. Still verify Sidekick/tmux, alternate languages and text-wrapping edge cases.
-## V2 contracts now exercised (2026-10-23)
-
-- `test/native/inline-hover.contract.test.mjs`: a capturing hover handles `Tab` by dismissing itself and handing keyboard ownership back to the Pi prompt; `Esc` dismisses only the hover. `test/native/native-controller.contract.test.mjs` ensures a late LSP response after lost focus never opens.
-- `test/provenance-resolver.test.mjs`: structured `read` tool-call ID/path survives even if the visible tool result omits the filename; numbered lines are verified against disk, and unsupported/missing source fails closed. Generated language-tagged fences become session-scoped read-only virtual documents.
-- `test/providers.test.mjs` and `test/mcp-transport.test.mjs`: replaceable standalone and opt-in pi-lens MCP provider implementations, read-only navigation arguments, 1-based pi-lens positions, child-process protocol. The latter uses a mock pi-lens MCP process, **not** a live pi-lens instance.
-- `pi-tab-focus/src/tests/index.test.ts` now tests transcript `K`/`gd`, focused-popup Tab return and clearing stale `g` prefixes. Live Pi fullscreen PTY tests also confirmed the actual key paths.
-
-The standalone backend supports virtual TypeScript source via in-memory LSP `didOpen` on synthetic project-local file URIs without touching disk. The experimental pi-lens MCP backend does not share the already-loaded pi-lens server pool and was blocked in the local installation by a missing `typebox` dependency.
+Passing unit suites is not a claim of full Sidekick support, universal wrapped spans or every language. Current measured outcomes and limitations belong in [VERIFICATION.md](VERIFICATION.md).

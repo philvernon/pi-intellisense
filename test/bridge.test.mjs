@@ -11,9 +11,9 @@ function bus(){
   };
 }
 const snapshot=Object.freeze({
-  version:1,sessionId:"session-1",semanticKey:"message:1",kind:"message",
-  sourceRevision:5,visualCursor:Object.freeze({row:12,col:6}),
-  itemStartRow:10,itemEndRow:20,renderedLines:["const answer = 42;"]
+  version:1,sessionId:"session-1",itemSemanticKey:"message:1",itemKind:"message",
+  transcriptRevision:"5",layoutRevision:"80",visualCursor:Object.freeze({row:12,col:6}),
+  renderedStartRow:10,renderedLines:["const answer = 42;"]
 });
 
 test("extension registers with pi-tab-focus using versioned event contract",async()=>{
@@ -24,6 +24,7 @@ test("extension registers with pi-tab-focus using versioned event contract",asyn
   assert.ok(registration);
   assert.equal(registration.sessionId,"session-1");
   assert.equal(typeof registration.invoke,"function");
+  assert.deepEqual(registration.actions,["hover","definition","references","declaration","implementation","typeDefinition"]);
   await registration.invoke("hover",snapshot);
   assert.deepEqual(seen,[["hover",snapshot]]);
   handle.dispose();

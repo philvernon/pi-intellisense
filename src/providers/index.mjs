@@ -105,8 +105,8 @@ export function createJsonLineMcpClient({command=process.execPath,args=[],cwd,en
   };
 }
 
-export function createProvider({kind="standalone",cwd,standaloneQuery,standaloneClose,piLensServer}){
-  if(kind==="standalone")return {kind,supportsVirtualDocuments:false,query:standaloneQuery,
+export function createProvider({kind="standalone",cwd,standaloneQuery,standaloneClose=()=>{},piLensServer}){
+  if(kind==="standalone")return {kind,supportsVirtualDocuments:true,query:standaloneQuery,
     close:()=>standaloneClose?.()};
   if(kind!=="pi-lens-mcp")throw new Error("Unknown IntelliSense provider: "+kind);
   const server=piLensServer??fileURLToPath(new URL("../../node_modules/pi-lens/dist/mcp/server.js",import.meta.url));
